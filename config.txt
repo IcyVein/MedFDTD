@@ -1,49 +1,43 @@
 <Path>
-path_save=E:\wangmeng\work\MRI\20160629\
+path_save=E:\configPath\
 <Time>
 nMax=10000
 Convergence=-30
 dt=0
 <Mesh>
-_spaceX=125,_spaceY=151,_spaceZ=151
-dx=2e-3,dy=2e-3,dz=2e-3
-padding=5
+_spaceX=50,_spaceY=50,_spaceZ=50
+dx=1e-3,dy=1e-3,dz=1e-3
+padding=0
 <Absorbing boundary>
 abcNo=1
 thicknessOfPml=7
 <Power source>
 sourceType=0
 sourceNum=1
-10,130,129
-port=x
+25,25,25
+port=z
 waveForm=0
 amp=1
-freq=345e6
+freq=2000e9
 t0=0
 pulse_width=0
 pathSRC=NULL
 <Model>
 -<Import model>
-path_data=E:\wangmeng\work\MRI\20160629\
+path_data=E:\dataPath\
 model_name=model.txt
 media_name=media.txt
 media_dispersion=0
-mediaNum=62
+mediaNum=0
 -<Build object>
 object_num=0
 -<Antenna>
-antenna_amount=1
-antenna_direction=3
-antenna_feed_x=50,antenna_feed_y=50,antenna_feed_z=50
-antenna_impedance=73.1
-antenna_length_high=39,antenna_length_low=39
+antenna_amount=0
 <Field Save>
-save_plane_amount=2
-1,30000,30,1,75
-1,30000,30,2,63
+save_plane_amount=1
+1,10000,10,1,25
 <SAR>
 -<Whole body SAR>
-Whole body SAR 1
+Whole body SAR 0
 -<Mass Averaged SAR>
-1
-10
+0
