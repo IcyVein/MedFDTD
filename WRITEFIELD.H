@@ -85,6 +85,7 @@ void writeField_xy (FILE* ex, FILE* ey, FILE* ez,
 	k=slice;
 
 	int saveis = is, saveie = ie;
+    
 	if (myrank == 0)
 		saveis = nxPML_1;
 	else if (myrank == nprocs - 1)
@@ -109,6 +110,30 @@ void writeField_xy (FILE* ex, FILE* ey, FILE* ez,
 		fprintf(hy,"\n");
 		fprintf(hz,"\n");
 	}
+    /*
+    if (myrank == 0)
+		saveis = 0;
+	else if (myrank == nprocs - 1)
+		saveie = Imax-1;
+	else;
+    for(j = 0; j < Jmax-1; j++)
+	{
+		for(i = saveis; i <= saveie; i++)
+		{
+			fprintf(ex,"%lf ", Ex(i,j,k-1));
+			fprintf(ey,"%lf ", Ey(i,j,k-1));
+			fprintf(ez,"%lf ", Ez(i,j,k));
+			fprintf(hx,"%lf ", Hx(i,j,k));
+			fprintf(hy,"%lf ", Hy(i,j,k));
+			fprintf(hz,"%lf ", Hz(i,j,k-1));
+		}
+		fprintf(ex,"\n");
+		fprintf(ey,"\n");
+		fprintf(ez,"\n");
+		fprintf(hx,"\n");
+		fprintf(hy,"\n");
+		fprintf(hz,"\n");
+	}*/
 }
 
 void writeField_yz (FILE* ex, FILE* ey, FILE* ez,
@@ -318,3 +343,19 @@ void saveData_Point(int timestep, int px, int py, int pz)
 	}
 }
 
+void writeField (FILE* fp, vectorD3 data, vector< int > range)
+{
+	int i, j, k;
+
+    for (k = range[4]; k<range[5]; k++)
+    {
+    	for(j = range[2]; j<range[3]; j++)
+    	{
+    		for(i = range[0]; i<range[1]; i++)
+    		{
+    			fprintf(fp, "%lf ", data[i][j][k]);
+    		}
+    		fprintf(fp,"\n");
+    	}
+    }
+}

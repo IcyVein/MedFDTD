@@ -13,24 +13,13 @@ void compute()
 	double tStep=0.0;
 	double tNear20[20] = {0.0};
 	int dn = 10;
-	int is_have_powersource = 0;
+    char path_check[MAX_SIZE_OF_PATH];
+    sprintf(path_check, "%scheckRMS_%d.txt", path_save, myrank);
+    checkData = 0, checkDataPast = 0;
 
-	/* Find the feed point */
-	if (is <= isource && isource <= ie)
-	{
-		is_have_powersource = 1;
-		int powersource_rank = myrank;
-		if (myrank != 0)
-			isource = isource - is + 1;
-	}
-	else if (isource == ie+1 && (port == 'y' || port == 'z'))
-	{
-		is_have_powersource = 1;
-		int powersource_rank = myrank;
-		if (myrank != 0)
-			isource = isource - is + 1;
-	}
-	else;
+#ifdef _DEBUG_L3
+        cout<<"In computer @Cpu : "<<myrank<<endl;
+#endif
 
 	if (myrank == 0)
 	{
@@ -57,11 +46,11 @@ void compute()
 	}
 
 	rad_region.xStart = 2 + paddingX_1 + thicknessOfPml;
-	rad_region.xEnd = -2+_spaceX + paddingX_1 + thicknessOfPml;
+	rad_region.xEnd = -2 +_spaceX + paddingX_1 + thicknessOfPml;
 	rad_region.yStart = 2 + paddingY_1 + thicknessOfPml;
-	rad_region.yEnd = -2+_spaceY + paddingY_1 + thicknessOfPml;
+	rad_region.yEnd = -2 +_spaceY + paddingY_1 + thicknessOfPml;
 	rad_region.zStart = 2 + paddingZ_1 + thicknessOfPml;
-	rad_region.zEnd = -2+_spaceZ + paddingZ_1 + thicknessOfPml;
+	rad_region.zEnd = -2 +_spaceZ + paddingZ_1 + thicknessOfPml;
 	rad_region.computeX_1 = 1;
 	rad_region.computeX_2 = 1;
 
@@ -111,10 +100,7 @@ void compute()
 	}
 #endif
 
-#ifdef _TF_SF
-	initialize1D();
-	computeLinkBC();
-#endif
+    float plane_wave_power = 0.0;
 
 	MPI_Request request_sendy_r, request_sendy_l;
 	MPI_Request request_sendz_r, request_sendz_l;
@@ -123,124 +109,223 @@ void compute()
 
 	MPI_Status status_recvy_r, status_recvy_l;
 	MPI_Status status_recvz_r, status_recvz_l;
+	MPI_Status status_sendy_r, status_sendy_l;
+	MPI_Status status_sendz_r, status_sendz_l;
 
 	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	//  BEGIN TIME STEP
 	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	if (myrank == 0)
 	{
-		printf("\nBegin time-stepping...\n");
+		printf("Begin time-stepping...\n");
 		fflush(stdout);
 	}
 	tStart = MPI_Wtime();
+	time_t t[8] = {0}, t0;
 	for(n = 1; n <= nMax; ++n)
 	{
+#ifdef _DEBUG_L3
+        cout<<"Cpu : "<<myrank<<endl;
+#endif
+#ifdef _DEBUG
+        if (myrank == 0)
+            cout<<"Current step: "<<n<<endl;
+#endif
 		tStepStart = MPI_Wtime();
+#ifdef _DEBUG_L3
+        cout<<"--Cpu : "<<myrank<<endl;
+#endif
 		if(n % dn == 0 && myrank == 0)
 		{
 			if(n <= 20)
-				printf("Time = %d, %f seconds for one step, %d / %d seconds left.\n",
+            {
+				printf("Step: %d, %fsec/step, %d/%d sec left/total.\n",
 						n, tStep * 20/n, (int)((nMax-n+1) * tStep) * 20/n, (int)((nMax-n+1) * tStep - tStart + tCurrent) * 20/n );
+            }
 			else
-				printf("Time = %d, %f seconds for one step, %d / %d seconds left.\n",
+            {
+				printf("Step: %d, %fsec/step, %d/%d sec left/total.\n",
 						n, tStep, (int)((nMax-n+1) * tStep), (int)((nMax-n+1) * tStep - tStart + tCurrent));
+            }
 			fflush(stdout);
 		}
 		MPI_Barrier(MPI_COMM_WORLD);
+		t[6] += time(NULL)-t0;
 
+	//-----------------------------------------------------------
+
+#ifdef _DEBUG
+        if (myrank == 0)
+            cout<<"Enter H"<<endl;
+#endif
 		/* H */
+		t0 = time(NULL);
 		if (0<myrank && myrank<nprocs-1)
 			computeFieldH();
 		else if (myrank == 0)
 			computeFieldH_0();
 		else /* myrank == nprocs - 1 */
 			computeFieldH_nprocsSub1();
+		t[0] += time(NULL)-t0;
 
+#ifdef _DEBUG
+        if (myrank == 0)
+            cout<<"Enter H - PML"<<endl;
+#endif
 		/* H-PML */
+		t0 = time(NULL);
 		if (0<myrank && myrank<nprocs-1)
 			computePMLH();
 		else if (myrank == 0)
 			computePMLH_0();
 		else /* myrank == nprocs - 1 */
 			computePMLH_nprocsSub1();
+		t[1] += time(NULL)-t0;
 
-#ifdef _TF_SF
-		fixLinkBC_H();
-		compute1D(n);
-		powersource1D(n);
+        if( sourceType == 1/*If Plane Wave*/)
+		{
+			powerSourcePlaneWaveH(n);/* -1/2 - dx/2/C/dt */
+		}
+
+		//MPI_Barrier(MPI_COMM_WORLD);
+
+//		/* Exchage Hy、Hz */
+//		/* Send right, Recv left */
+//		t0 = time(NULL);
+//		if (0<myrank && myrank<nprocs-1)
+//		{
+//			MPI_Isend(&Hy(ie,0,0), Jmax * Kmax, MPI_FLOAT, myrank+1, 100+myrank+1, MPI_COMM_WORLD, &request_sendy_r);
+//			MPI_Irecv(&Hy(is-1,0,0), Jmax * Kmax, MPI_FLOAT, myrank-1, 100+myrank, MPI_COMM_WORLD, &request_recvy_l);
+//			MPI_Isend(&Hz(ie,0,0), (Jmax-1) * (Kmax-1), MPI_FLOAT, myrank+1, 200+myrank+1, MPI_COMM_WORLD, &request_sendz_r);
+//			MPI_Irecv(&Hz(is-1,0,0), (Jmax-1) * (Kmax-1), MPI_FLOAT, myrank-1, 200+myrank, MPI_COMM_WORLD, &request_recvz_l);	
+//		}
+//		else if (myrank == 0)
+//		{
+//			MPI_Isend(&Hy(ie,0,0), Jmax * Kmax, MPI_FLOAT, myrank+1, 100+myrank+1, MPI_COMM_WORLD, &request_sendy_r);
+//			MPI_Isend(&Hz(ie,0,0), (Jmax-1) * (Kmax-1), MPI_FLOAT, myrank+1, 200+myrank+1, MPI_COMM_WORLD, &request_sendz_r);
+//		}
+//		else /* myrank == nprocs - 1 */
+//		{
+//			MPI_Irecv(&Hy(is-1,0,0), Jmax * Kmax, MPI_FLOAT, myrank-1, 100+myrank, MPI_COMM_WORLD, &request_recvy_l);
+//			MPI_Irecv(&Hz(is-1,0,0), (Jmax-1) * (Kmax-1), MPI_FLOAT, myrank-1, 200+myrank, MPI_COMM_WORLD, &request_recvz_l);
+//		}
+//		t[2] += time(NULL)-t0;
+//
+//		/* Send left, Recv right */
+//		t0 = time(NULL);
+//		if (0<myrank && myrank<nprocs-1)
+//		{
+//			MPI_Isend(&Hy(is,0,0), Jmax * Kmax, MPI_FLOAT, myrank-1, 300+myrank-1, MPI_COMM_WORLD, &request_sendy_l);
+//			MPI_Irecv(&Hy(ie+1,0,0), Jmax * Kmax, MPI_FLOAT, myrank+1, 300+myrank, MPI_COMM_WORLD, &request_recvy_r);
+//			MPI_Isend(&Hz(is,0,0), (Jmax-1) * (Kmax-1), MPI_FLOAT, myrank-1, 400+myrank-1, MPI_COMM_WORLD, &request_sendz_l);
+//			MPI_Irecv(&Hz(ie+1,0,0), (Jmax-1) * (Kmax-1), MPI_FLOAT, myrank+1, 400+myrank, MPI_COMM_WORLD, &request_recvz_r);
+//		}
+//		else if (myrank == 0)
+//		{
+//			MPI_Irecv(&Hy(ie+1,0,0), Jmax * Kmax, MPI_FLOAT, myrank+1, 300+myrank, MPI_COMM_WORLD, &request_recvy_r);
+//			MPI_Irecv(&Hz(ie+1,0,0), (Jmax-1) * (Kmax-1), MPI_FLOAT, myrank+1, 400+myrank, MPI_COMM_WORLD, &request_recvz_r);
+//		}
+//		else /* myrank == nprocs - 1 */
+//		{
+//			MPI_Isend(&Hy(is,0,0), Jmax * Kmax, MPI_FLOAT, myrank-1, 300+myrank-1, MPI_COMM_WORLD, &request_sendy_l);
+//			MPI_Isend(&Hz(is,0,0), (Jmax-1) * (Kmax-1), MPI_FLOAT, myrank-1, 400+myrank-1, MPI_COMM_WORLD, &request_sendz_l);
+//		}
+//		t[3] += time(NULL)-t0;
+
+#ifdef _DEBUG
+        if (myrank == 0)
+            cout<<"Trans data"<<endl;
 #endif
-
-		MPI_Barrier(MPI_COMM_WORLD);
-
-		/* Exchage Hy、Hz */
-		/* Send right, Recv left */
-		if (0<myrank && myrank<nprocs-1)
+        /* Recv */
+        if (0<myrank && myrank<nprocs-1)
 		{
-			MPI_Isend(&Hy(ie,0,0), Jmax * Kmax, MPI_DOUBLE, myrank+1, 100+myrank+1, MPI_COMM_WORLD, &request_sendy_r);
-			MPI_Irecv(&Hy(is-1,0,0), Jmax * Kmax, MPI_DOUBLE, myrank-1, 100+myrank, MPI_COMM_WORLD, &request_recvy_l);
-			MPI_Isend(&Hz(ie,0,0), (Jmax-1) * (Kmax-1), MPI_DOUBLE, myrank+1, 200+myrank+1, MPI_COMM_WORLD, &request_sendz_r);
-			MPI_Irecv(&Hz(is-1,0,0), (Jmax-1) * (Kmax-1), MPI_DOUBLE, myrank-1, 200+myrank, MPI_COMM_WORLD, &request_recvz_l);	
-		  }
-		else if (myrank == 0)
-		{
-			MPI_Isend(&Hy(ie,0,0), Jmax * Kmax, MPI_DOUBLE, myrank+1, 100+myrank+1, MPI_COMM_WORLD, &request_sendy_r);
-			MPI_Isend(&Hz(ie,0,0), (Jmax-1) * (Kmax-1), MPI_DOUBLE, myrank+1, 200+myrank+1, MPI_COMM_WORLD, &request_sendz_r);
-		}
-		else /* myrank == nprocs - 1 */
-		{
-			MPI_Irecv(&Hy(is-1,0,0), Jmax * Kmax, MPI_DOUBLE, myrank-1, 100+myrank, MPI_COMM_WORLD, &request_recvy_l);
-			MPI_Irecv(&Hz(is-1,0,0), (Jmax-1) * (Kmax-1), MPI_DOUBLE, myrank-1, 200+myrank, MPI_COMM_WORLD, &request_recvz_l);
-		}
-
-		/* Send left, Recv right */
-		if (0<myrank && myrank<nprocs-1)
-		{
-			MPI_Isend(&Hy(is,0,0), Jmax * Kmax, MPI_DOUBLE, myrank-1, 300+myrank-1, MPI_COMM_WORLD, &request_sendy_l);
-			MPI_Irecv(&Hy(ie+1,0,0), Jmax * Kmax, MPI_DOUBLE, myrank+1, 300+myrank, MPI_COMM_WORLD, &request_recvy_r);
-			MPI_Isend(&Hz(is,0,0), (Jmax-1) * (Kmax-1), MPI_DOUBLE, myrank-1, 400+myrank-1, MPI_COMM_WORLD, &request_sendz_l);
-			MPI_Irecv(&Hz(ie+1,0,0), (Jmax-1) * (Kmax-1), MPI_DOUBLE, myrank+1, 400+myrank, MPI_COMM_WORLD, &request_recvz_r);
+			MPI_Irecv(&Hy(ie+1,0,0), Jmax * Kmax, MPI_FLOAT, myrank+1, 300+myrank, MPI_COMM_WORLD, &request_recvy_r);
+			MPI_Irecv(&Hy(is-1,0,0), Jmax * Kmax, MPI_FLOAT, myrank-1, 100+myrank, MPI_COMM_WORLD, &request_recvy_l);
+			MPI_Irecv(&Hz(is-1,0,0), (Jmax-1) * (Kmax-1), MPI_FLOAT, myrank-1, 200+myrank, MPI_COMM_WORLD, &request_recvz_l);	
+			MPI_Irecv(&Hz(ie+1,0,0), (Jmax-1) * (Kmax-1), MPI_FLOAT, myrank+1, 400+myrank, MPI_COMM_WORLD, &request_recvz_r);
 		}
 		else if (myrank == 0)
 		{
-			MPI_Irecv(&Hy(ie+1,0,0), Jmax * Kmax, MPI_DOUBLE, myrank+1, 300+myrank, MPI_COMM_WORLD, &request_recvy_r);
-			MPI_Irecv(&Hz(ie+1,0,0), (Jmax-1) * (Kmax-1), MPI_DOUBLE, myrank+1, 400+myrank, MPI_COMM_WORLD, &request_recvz_r);
+			MPI_Irecv(&Hy(ie+1,0,0), Jmax * Kmax, MPI_FLOAT, myrank+1, 300+myrank, MPI_COMM_WORLD, &request_recvy_r);
+			MPI_Irecv(&Hz(ie+1,0,0), (Jmax-1) * (Kmax-1), MPI_FLOAT, myrank+1, 400+myrank, MPI_COMM_WORLD, &request_recvz_r);
 		}
 		else /* myrank == nprocs - 1 */
 		{
-			MPI_Isend(&Hy(is,0,0), Jmax * Kmax, MPI_DOUBLE, myrank-1, 300+myrank-1, MPI_COMM_WORLD, &request_sendy_l);
-			MPI_Isend(&Hz(is,0,0), (Jmax-1) * (Kmax-1), MPI_DOUBLE, myrank-1, 400+myrank-1, MPI_COMM_WORLD, &request_sendz_l);
+			MPI_Irecv(&Hy(is-1,0,0), Jmax * Kmax, MPI_FLOAT, myrank-1, 100+myrank, MPI_COMM_WORLD, &request_recvy_l);
+			MPI_Irecv(&Hz(is-1,0,0), (Jmax-1) * (Kmax-1), MPI_FLOAT, myrank-1, 200+myrank, MPI_COMM_WORLD, &request_recvz_l);
 		}
-
+		t[2] += time(NULL)-t0;
 		MPI_Barrier(MPI_COMM_WORLD);
 
+		/* Send */
+		t0 = time(NULL);
+		if (0<myrank && myrank<nprocs-1)
+		{
+			MPI_Isend(&Hy(is,0,0), Jmax * Kmax, MPI_FLOAT, myrank-1, 300+myrank-1, MPI_COMM_WORLD, &request_sendy_l);
+			MPI_Isend(&Hy(ie,0,0), Jmax * Kmax, MPI_FLOAT, myrank+1, 100+myrank+1, MPI_COMM_WORLD, &request_sendy_r);
+			MPI_Isend(&Hz(is,0,0), (Jmax-1) * (Kmax-1), MPI_FLOAT, myrank-1, 400+myrank-1, MPI_COMM_WORLD, &request_sendz_l);
+			MPI_Isend(&Hz(ie,0,0), (Jmax-1) * (Kmax-1), MPI_FLOAT, myrank+1, 200+myrank+1, MPI_COMM_WORLD, &request_sendz_r);
+		}
+		else if (myrank == 0)
+		{
+			MPI_Isend(&Hy(ie,0,0), Jmax * Kmax, MPI_FLOAT, myrank+1, 100+myrank+1, MPI_COMM_WORLD, &request_sendy_r);
+			MPI_Isend(&Hz(ie,0,0), (Jmax-1) * (Kmax-1), MPI_FLOAT, myrank+1, 200+myrank+1, MPI_COMM_WORLD, &request_sendz_r);
+		}
+		else /* myrank == nprocs - 1 */
+		{
+			MPI_Isend(&Hy(is,0,0), Jmax * Kmax, MPI_FLOAT, myrank-1, 300+myrank-1, MPI_COMM_WORLD, &request_sendy_l);
+			MPI_Isend(&Hz(is,0,0), (Jmax-1) * (Kmax-1), MPI_FLOAT, myrank-1, 400+myrank-1, MPI_COMM_WORLD, &request_sendz_l);
+		}
+
+		//MPI_Barrier(MPI_COMM_WORLD);
+
+#ifdef _DEBUG
+        if (myrank == 0)
+            cout<<"Enter E"<<endl;
+#endif
 		/* E */
+		t0 = time(NULL);
 		if (0<myrank && myrank<nprocs-1)
 		{
 			MPI_Wait(&request_recvy_l, &status_recvy_l);
+			MPI_Wait(&request_sendy_l, &status_sendy_l);
 
 			MPI_Wait(&request_recvz_l, &status_recvz_l);
+			MPI_Wait(&request_sendz_l, &status_sendz_l);
 
 			computeFieldE();
 
 			MPI_Wait(&request_recvy_r, &status_recvy_r);
+			MPI_Wait(&request_sendy_r, &status_sendy_r);
 			MPI_Wait(&request_recvz_r, &status_recvz_r);
+			MPI_Wait(&request_sendz_r, &status_sendz_r);
 			computeFieldE_right();
 		}
 		else if (myrank == 0)
 		{
 			MPI_Wait(&request_recvy_r, &status_recvy_r);
+			MPI_Wait(&request_sendy_r, &status_sendy_r);
 			MPI_Wait(&request_recvz_r, &status_recvz_r);
+			MPI_Wait(&request_sendz_r, &status_sendz_r);
 			computeFieldE_0();
 		}
 		else /* myrank == nprocs - 1 */
 		{
 			MPI_Wait(&request_recvy_l, &status_recvy_l);
+			MPI_Wait(&request_sendy_l, &status_sendy_l);
 			MPI_Wait(&request_recvz_l, &status_recvz_l);
+			MPI_Wait(&request_sendz_l, &status_sendz_l);
 
 			computeFieldE_nprocsSub1();
 		}
+		t[4] += time(NULL)-t0;
 
+#ifdef _DEBUG
+        if (myrank == 0)
+            cout<<"Enter E - PML"<<endl;
+#endif
 		/* E-PML */
+		t0 = time(NULL);
 		if (0<myrank && myrank<nprocs-1)
 		{
 			computePMLE();
@@ -251,21 +336,23 @@ void compute()
 		}
 		else /* myrank == nprocs - 1 */
 			computePMLE_nprocsSub1();
+		t[5] += time(NULL)-t0;
 
-#ifdef _TF_SF
-		fixLinkBC_E();
+		t0 = time(NULL);
+		//MPI_Barrier(MPI_COMM_WORLD);
+		t[6] += time(NULL)-t0;
+
+	//-----------------------------------------------------------
+	//   Apply source
+	//-----------------------------------------------------------
+
+#ifdef _DEBUG
+        if (myrank == 0)
+            cout<<"Source"<<endl;
 #endif
+		t0 = time(NULL);
 
-		MPI_Barrier(MPI_COMM_WORLD);
-
-	//-----------------------------------------------------------
-	//   Apply a point source (Hard)
-	//-----------------------------------------------------------
-
-		if(is_have_powersource || sourceType == 1/*If Plane Wave*/)
-		{
-			powerSource(n);
-		}
+		powerSource(n);
 
 	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	//  WRITE TO OUTPUT FILES
@@ -273,13 +360,82 @@ void compute()
 
 		saveData(n);
 
+        saveMaxE();
+
+		MPI_Barrier(MPI_COMM_WORLD);
+#ifdef _DEBUG
+        if (myrank == 0)
+            cout<<"Sar"<<endl;
+#endif
 #ifdef _SAR
-		for (i = 0; i<save_localSAR_amount+1; ++i)
+
+#ifdef _DEBUG_L2
+        if (myrank == 0)
+            cout<<"computeRMS"<<endl;
+#endif
+
+		for (i = 0; i<_spaceZ+1; ++i)
 		{
 			computeRMS(&pSAR[i], n);
 		}
+#ifdef _DEBUG_L2
+        if (myrank == 0)
+            cout<<"checkData"<<endl;
+#endif
+        if (n%(sourceT) == 0 && n+sourceT<=nMax)
+        {
+            checkDataPast = checkData;
+#ifdef _DEBUG_L3
+        if (myrank == 0)
+            cout<<"checkRMS --> "<<myrank<<endl;
+#endif
+            checkData = checkRMS();
+#ifdef _DEBUG_L3
+        if (myrank == 0)
+            cout<<"convergence --> "<<myrank<<endl;
+#endif
+            if (checkData != 0 && checkData != checkDataPast)
+                convergence = 10.0*log10(fabs(checkData-checkDataPast)/checkData);
+            else if (checkData == checkDataPast)
+                convergence = convergenceTarget;
+            else
+                convergence = 0.0;
+#ifdef _DEBUG_L3
+        if (myrank == 0)
+            cout<<"reset--> "<<myrank<<endl;
+#endif
+            resetRMS();
+            fflush(stdout);
+            MPI_Allreduce(&convergence, &convergenceCurr, 1, MPI_FLOAT, MPI_MAX, MPI_COMM_WORLD);
+            if (convergenceCurr <= convergenceTarget)
+            {
+                nMax = nMax < (n+sourceT) ? nMax:(n+sourceT); /* nMax = min(nMax, n+sourceT) */
+                if (myrank == 0)
+                {
+                    printf("Convergence: %2.1f <= %2.1fdB, set max time step: %d.\n", convergenceCurr, convergenceTarget, nMax);
+                    fprintf(fp_log, "Convergence: %2.1f <= %2.1fdB, set max time step: %d.\n", convergenceCurr, convergenceTarget, nMax);
+                    fflush(stdout);
+                }
+            }
+            else if (myrank == 0)
+            {
+                printf("Convergence: %2.1f / %2.1fdB.\n", convergenceCurr, convergenceTarget);
+                fprintf(fp_log, "Convergence: %2.1f / %2.1fdB.\n", convergenceCurr, convergenceTarget);
+                fflush(stdout);
+            }
+        }
+#ifdef _DEBUG_L2
+        if (myrank == 0)
+            cout<<"resetRMS"<<endl;
+#endif
+        if (n == (nMax-sourceT))
+            resetRMS();
 #endif
 
+#ifdef _DEBUG
+        if (myrank == 0)
+            cout<<"End sar"<<endl;
+#endif
 #ifdef _POYNTING
 		poyingt = radiationPower(rad_region);
 
@@ -301,13 +457,18 @@ void compute()
 		for (i = 0; i<20; ++i)
 			tStep += tNear20[i];
 		tStep /= 20;
+		t[7] += time(NULL)-t0;
 	}//  END TIME STEP
-	free(Ex);
-	free(Ey);
-	free(Ez);
-	free(Hx);
-	free(Hy);
-	free(Hz);
+    fprintf(fp_mem, "inC1:\t%d\n", mem_count);
+
+    char fn_maxE[MAX_SIZE_OF_PATH];
+    sprintf(fn_maxE, "%smaxE_%d.txt", path_save, myrank);
+    FILE* fp_maxE = fopen(fn_maxE, "w+");
+    writeField(fp_maxE, *maxE, outputRangeE);
+    fclose(fp_maxE);
+
+	freeFDTDData();
+    fprintf(fp_mem, "inC2:\t%d\n", mem_count);
 
 	for (i = 0; i < save_plane_amount; i++)
 	{
@@ -318,7 +479,7 @@ void compute()
 		fclose(fp_save_field_file[i].hy);
 		fclose(fp_save_field_file[i].hz);
 	}
-
+	flag = 13; /* End FDTD Iteration */
 #ifdef _SAR
 	for (i = 0; i<save_localSAR_amount; ++i)
 	{
@@ -327,49 +488,47 @@ void compute()
 
 	for (i = 0; i<save_localSAR_amount; ++i)
 	{
-		writeLocalSAR(pSAR[i].fp, pSAR[i].localSARData);
-		fclose(pSAR[i].fp);
+		//writeLocalSAR(pSAR[i].fp, pSAR[i].localSARData);
+		//fclose(pSAR[i].fp);
 	}
 #endif
+    fprintf(fp_mem, "inC3:\t%d\n", mem_count);
 
-	freeArray3(CAx, Imax, Jmax-1, Kmax-1);
-	freeArray3(CBx, Imax, Jmax-1, Kmax-1);
-
-	freeArray3(CAy, Imax, Jmax-1, Kmax-1);
-	freeArray3(CBy, Imax, Jmax-1, Kmax-1);
-
-	freeArray3(CAz, Imax, Jmax-1, Kmax-1);
-	freeArray3(CBz, Imax, Jmax-1, Kmax-1);
+	freeArray3Char(modelDataX, Imax+1, Jmax, Kmax);
+	freeArray3Char(modelDataY, Imax+1, Jmax, Kmax);
+	freeArray3Char(modelDataZ, Imax+1, Jmax, Kmax);
+    fprintf(fp_mem, "inC4:\t%d\n", mem_count);
 
 #ifdef _SAR
-	freeArray3(ID1_SigR, Imax+1, Jmax, Kmax);
-	freeArray3(ID2_SigR, Imax+1, Jmax, Kmax);
-	freeArray3(ID3_SigR, Imax+1, Jmax, Kmax);
-	freeArray3(ID1_RhoR, Imax+1, Jmax, Kmax);
-	freeArray3(ID2_RhoR, Imax+1, Jmax, Kmax);
-	freeArray3(ID3_RhoR, Imax+1, Jmax, Kmax);
-#endif
-
-#ifdef _SAR
-	if (XgSAR)
+	if (nXgSAR || whole_body_sar)
 	{
-		computeXgSAR((double)XgSAR);
+		computeXgSAR(nXgSAR);
 	}
 #endif
+    fprintf(fp_mem, "inC5:\t%d\n", mem_count);
 
 #ifdef _POYNTING
 	if (myrank == 0)
 	{
 		aveRadiationPower /= (int)(1/(freq*dt));
-		cout<<"aveRadiationPower = "<<aveRadiationPower<<endl;
+		printf("Averaged radiation power = %eW\n", aveRadiationPower);
 		fclose(fp_POYNTING);
 	}
 #endif
-
+        
+    if (sourceType == 1 && myrank == 0)
+    {
+        plane_wave_power = amp*amp/2/sqrt(muO/epsO);
+        printf("Power of plane wave : %eW/m2\n", plane_wave_power);
+        fprintf(fp_log, "Power of plane wave : %eW/m2\n", plane_wave_power);
+        fflush(stdout);
+    }
 	if (myrank == 0)
 	{
-		printf("Done time-stepping...\n");
-		printf("Total time consumption : %d second.\n", (int)(tCurrent - tStart));
+		tCurrent = MPI_Wtime();
+		printf("All computational tasks are completed.\n");
+		printf("Time consumption : %d second, %d time step.\n", (int)(tCurrent - tStart), nMax);
+		fprintf(fp_log, "Time consumption : %d second, %d time step.\n", (int)(tCurrent - tStart), nMax);
 		fflush(stdout);
 	}
 }
@@ -890,7 +1049,7 @@ void computeFieldE_0()
 #ifdef _POYNTING
 					preEx(i,j,k) = Ex(i,j,k);
 #endif
-					Ex(i,j,k) = CAx[i][j][k] * Ex(i,j,k) + CBx[i][j][k] *
+					Ex(i,j,k) = CA[modelDataX[i][j][k]] * Ex(i,j,k) + CB[modelDataX[i][j][k]] *
 								  ((Hz(i,j,k) - Hz(i,j-1,k)) * den_ey[j] +
 								  (Hy(i,j,k) - Hy(i,j,k+1)) * den_ez[k] );
 				}
@@ -909,7 +1068,7 @@ void computeFieldE_0()
 #ifdef _POYNTING
 					preEy(i,j,k) = Ey(i,j,k);
 #endif
-					Ey(i,j,k) = CAy[i][j][k] * Ey(i,j,k) + CBy[i][j][k] *
+					Ey(i,j,k) = CA[modelDataY[i][j][k]] * Ey(i,j,k) + CB[modelDataY[i][j][k]] *
 								   ((Hz(i-1,j,k) - Hz(i,j,k)) * den_ex[i] +
 								   (Hx(i,j,k+1) - Hx(i,j,k)) * den_ez[k] );
 				}
@@ -928,12 +1087,30 @@ void computeFieldE_0()
 #ifdef _POYNTING
 					preEz(i,j,k) = Ez(i,j,k);
 #endif
-					Ez(i,j,k) = CAz[i][j][k] * Ez(i,j,k) + CBz[i][j][k]
+                   /* 
+                    if ( i == thicknessOfPml+1+planeWaveIndex && Ez(i, j, k) > maxEz(0, j, k) && Ez(i, j, k) > 0)
+                    {
+                        maxEz(0, j, k) = Ez(i, j, k);
+                    }
+                    if ( i == thicknessOfPml+1+planeWaveIndex && Ez(i, j, k) < minEz(0, j, k) && Ez(i, j, k) < 0)
+                    {
+                        minEz(0, j, k) = Ez(i, j, k);
+                    }*/
+					Ez(i,j,k) = CA[modelDataZ[i][j][k]] * Ez(i,j,k) + CB[modelDataZ[i][j][k]]
 								* ((Hy(i,j,k) - Hy(i-1,j,k)) * den_ex[i] +
 								(Hx(i,j-1,k) - Hx(i,j,k)) * den_ey[j]);
 				}
 			}
 		}
+/*
+    for(j = 1; j < Jmax-1; ++j)
+	{
+		for(k = 1; k < Kmax-1; ++k)
+		{
+            if ( abs(Ez(is+thicknessOfPml+1+5+1, j, k)) > maxEz(j, k))//检查波源发生平面+1处的电场值
+                maxEz(j, k) = abs(Ez(is+thicknessOfPml+1+5+1, j, k));
+		}
+	}*/
 }
 
 void computeFieldE()
@@ -951,7 +1128,7 @@ void computeFieldE()
 #ifdef _POYNTING
 					preEx(i,j,k) = Ex(i,j,k);
 #endif
-					Ex(i,j,k) = CAx[i][j][k] * Ex(i,j,k) + CBx[i][j][k] *
+					Ex(i,j,k) = CA[modelDataX[i][j][k]] * Ex(i,j,k) + CB[modelDataX[i][j][k]] *
 								  ((Hz(i,j,k) - Hz(i,j-1,k)) * den_ey[j] +
 								  (Hy(i,j,k) - Hy(i,j,k+1)) * den_ez[k] );
 				}
@@ -970,7 +1147,7 @@ void computeFieldE()
 #ifdef _POYNTING
 					preEy(i,j,k) = Ey(i,j,k);
 #endif
-					Ey(i,j,k) = CAy[i][j][k] * Ey(i,j,k) + CBy[i][j][k] *
+					Ey(i,j,k) = CA[modelDataY[i][j][k]] * Ey(i,j,k) + CB[modelDataY[i][j][k]] *
 								   ((Hz(i-1,j,k) - Hz(i,j,k)) * den_ex[i] +
 								   (Hx(i,j,k+1) - Hx(i,j,k)) * den_ez[k] );
 				}
@@ -989,7 +1166,7 @@ void computeFieldE()
 #ifdef _POYNTING
 				preEz(i,j,k) = Ez(i,j,k);
 #endif
-				Ez(i,j,k) = CAz[i][j][k] * Ez(i,j,k) + CBz[i][j][k]
+				Ez(i,j,k) = CA[modelDataZ[i][j][k]] * Ez(i,j,k) + CB[modelDataZ[i][j][k]]
 							* ((Hy(i,j,k) - Hy(i-1,j,k)) * den_ex[i] +
 							(Hx(i,j-1,k) - Hx(i,j,k)) * den_ey[j]);
 			}
@@ -1011,7 +1188,7 @@ void computeFieldE_right()
 #ifdef _POYNTING
 					preEy(i,j,k) = Ey(i,j,k);
 #endif
-					Ey(i,j,k) = CAy[i][j][k] * Ey(i,j,k) + CBy[i][j][k] *
+					Ey(i,j,k) = CA[modelDataY[i][j][k]] * Ey(i,j,k) + CB[modelDataY[i][j][k]] *
 								   ((Hz(i-1,j,k) - Hz(i,j,k)) * den_ex[i] +
 								   (Hx(i,j,k+1) - Hx(i,j,k)) * den_ez[k] );
 				}
@@ -1028,7 +1205,7 @@ void computeFieldE_right()
 #ifdef _POYNTING
 				preEz(i,j,k) = Ez(i,j,k);
 #endif
-				Ez(i,j,k) = CAz[i][j][k] * Ez(i,j,k) + CBz[i][j][k]
+				Ez(i,j,k) = CA[modelDataZ[i][j][k]] * Ez(i,j,k) + CB[modelDataZ[i][j][k]]
 							* ((Hy(i,j,k) - Hy(i-1,j,k)) * den_ex[i] +
 							(Hx(i,j-1,k) - Hx(i,j,k)) * den_ey[j]);
 			}
@@ -1050,7 +1227,7 @@ void computeFieldE_nprocsSub1()
 #ifdef _POYNTING
 					preEx(i,j,k) = Ex(i,j,k);
 #endif
-					Ex(i,j,k) = CAx[i][j][k] * Ex(i,j,k) + CBx[i][j][k] *
+					Ex(i,j,k) = CA[modelDataX[i][j][k]] * Ex(i,j,k) + CB[modelDataX[i][j][k]] *
 								  ((Hz(i,j,k) - Hz(i,j-1,k)) * den_ey[j] +
 								  (Hy(i,j,k) - Hy(i,j,k+1)) * den_ez[k] );
 				}
@@ -1069,7 +1246,7 @@ void computeFieldE_nprocsSub1()
 #ifdef _POYNTING
 					preEy(i,j,k) = Ey(i,j,k);
 #endif
-					Ey(i,j,k) = CAy[i][j][k] * Ey(i,j,k) + CBy[i][j][k] *
+					Ey(i,j,k) = CA[modelDataY[i][j][k]] * Ey(i,j,k) + CB[modelDataY[i][j][k]] *
 								   ((Hz(i-1,j,k) - Hz(i,j,k)) * den_ex[i] +
 								   (Hx(i,j,k+1) - Hx(i,j,k)) * den_ez[k] );
 				}
@@ -1088,7 +1265,7 @@ void computeFieldE_nprocsSub1()
 #ifdef _POYNTING
 					preEz(i,j,k) = Ez(i,j,k);
 #endif
-					Ez(i,j,k) = CAz[i][j][k] * Ez(i,j,k) + CBz[i][j][k]
+					Ez(i,j,k) = CA[modelDataZ[i][j][k]] * Ez(i,j,k) + CB[modelDataZ[i][j][k]]
 								* ((Hy(i,j,k) - Hy(i-1,j,k)) * den_ex[i] +
 								(Hx(i,j-1,k) - Hx(i,j,k)) * den_ey[j]);
 				}
@@ -1110,10 +1287,10 @@ void computePMLE_0()
 				{
 					psi_Exy_1[i][j][k] = be_y_1[j] * psi_Exy_1[i][j][k]
 									   + ce_y_1[j] * (Hz(i,j,k) - Hz(i,j-1,k))/dy;
-					Ex(i,j,k) = Ex(i,j,k) + CBx[i][j][k] * psi_Exy_1[i][j][k];
+					Ex(i,j,k) = Ex(i,j,k) + CB[modelDataX[i][j][k]] * psi_Exy_1[i][j][k];
 					psi_Exy_2[i][jj][k] = be_y_2[jj] * psi_Exy_2[i][jj][k]
 										+ ce_y_2[jj] * (Hz(i,j2,k) - Hz(i,j2-1,k)) / dy;
-					Ex(i,j2,k) = Ex(i,j2,k) + CBx[i][j2][k] * psi_Exy_2[i][jj][k];
+					Ex(i,j2,k) = Ex(i,j2,k) + CB[modelDataX[i][j2][k]] * psi_Exy_2[i][jj][k];
 				}
 				--jj;
 				++j2;
@@ -1130,10 +1307,10 @@ void computePMLE_0()
 				{
 					psi_Exz_1[i][j][k] = be_z_1[k] * psi_Exz_1[i][j][k]
 									   + ce_z_1[k] * (Hy(i,j,k) - Hy(i,j,k+1)) / dz;
-					Ex(i,j,k) = Ex(i,j,k) + CBx[i][j][k] * psi_Exz_1[i][j][k];
+					Ex(i,j,k) = Ex(i,j,k) + CB[modelDataX[i][j][k]] * psi_Exz_1[i][j][k];
 					psi_Exz_2[i][j][kk] = be_z_2[kk] * psi_Exz_2[i][j][kk]
 										+ ce_z_2[kk] * (Hy(i,j,k2) - Hy(i,j,k2+1)) / dz;
-					Ex(i,j,k2) = Ex(i,j,k2) + CBx[i][j][k2] * psi_Exz_2[i][j][kk];
+					Ex(i,j,k2) = Ex(i,j,k2) + CB[modelDataX[i][j][k2]] * psi_Exz_2[i][j][kk];
 					--kk;
 					++k2;
 				}
@@ -1150,7 +1327,7 @@ void computePMLE_0()
 				{
 					psi_Eyx_1[i][j][k] = be_x_1[i] * psi_Eyx_1[i][j][k]
 									   + ce_x_1[i] * (Hz(i-1,j,k) - Hz(i,j,k)) / dx;
-					Ey(i,j,k) = Ey(i,j,k) + CBy[i][j][k] * psi_Eyx_1[i][j][k];
+					Ey(i,j,k) = Ey(i,j,k) + CB[modelDataY[i][j][k]] * psi_Eyx_1[i][j][k];
 				}
 			}
 			--ii;
@@ -1167,10 +1344,10 @@ void computePMLE_0()
 				{
 					psi_Eyz_1[i][j][k] = be_z_1[k] * psi_Eyz_1[i][j][k]
 									   + ce_z_1[k] * (Hx(i,j,k+1) - Hx(i,j,k)) / dz;
-					Ey(i,j,k) = Ey(i,j,k) + CBy[i][j][k] * psi_Eyz_1[i][j][k];
+					Ey(i,j,k) = Ey(i,j,k) + CB[modelDataY[i][j][k]] * psi_Eyz_1[i][j][k];
 					psi_Eyz_2[i][j][kk] = be_z_2[kk] * psi_Eyz_2[i][j][kk]
 										+ ce_z_2[kk] * (Hx(i,j,k2+1) - Hx(i,j,k2)) / dz;
-					Ey(i,j,k2) = Ey(i,j,k2) + CBy[i][j][k2] * psi_Eyz_2[i][j][kk];
+					Ey(i,j,k2) = Ey(i,j,k2) + CB[modelDataY[i][j][k2]] * psi_Eyz_2[i][j][kk];
 					--kk;
 					++k2;
 				}
@@ -1187,7 +1364,7 @@ void computePMLE_0()
 				{
 					psi_Ezx_1[i][j][k] = be_x_1[i] * psi_Ezx_1[i][j][k]
 									   + ce_x_1[i] * (Hy(i,j,k) - Hy(i-1,j,k)) / dx;
-					Ez(i,j,k) = Ez(i,j,k) + CBz[i][j][k] * psi_Ezx_1[i][j][k];
+					Ez(i,j,k) = Ez(i,j,k) + CB[modelDataZ[i][j][k]] * psi_Ezx_1[i][j][k];
 				}
 			}
 			--ii;
@@ -1204,10 +1381,10 @@ void computePMLE_0()
 				{
 					psi_Ezy_1[i][j][k] = be_y_1[j] * psi_Ezy_1[i][j][k]
 									   + ce_y_1[j] * (Hx(i,j-1,k) - Hx(i,j,k)) / dy;
-					Ez(i,j,k) = Ez(i,j,k) + CBz[i][j][k] * psi_Ezy_1[i][j][k];
+					Ez(i,j,k) = Ez(i,j,k) + CB[modelDataZ[i][j][k]] * psi_Ezy_1[i][j][k];
 					psi_Ezy_2[i][jj][k] = be_y_2[jj] * psi_Ezy_2[i][jj][k]
 										+ ce_y_2[jj] * (Hx(i,j2-1,k) - Hx(i,j2,k)) / dy;
-					Ez(i,j2,k) = Ez(i,j2,k) + CBz[i][j2][k] * psi_Ezy_2[i][jj][k];
+					Ez(i,j2,k) = Ez(i,j2,k) + CB[modelDataZ[i][j2][k]] * psi_Ezy_2[i][jj][k];
 				}
 				--jj;
 				++j2;
@@ -1229,10 +1406,10 @@ void computePMLE()
 				{
 					psi_Exy_1[i][j][k] = be_y_1[j] * psi_Exy_1[i][j][k]
 									   + ce_y_1[j] * (Hz(i,j,k) - Hz(i,j-1,k))/dy;
-					Ex(i,j,k) = Ex(i,j,k) + CBx[i][j][k] * psi_Exy_1[i][j][k];
+					Ex(i,j,k) = Ex(i,j,k) + CB[modelDataX[i][j][k]] * psi_Exy_1[i][j][k];
 					psi_Exy_2[i][jj][k] = be_y_2[jj] * psi_Exy_2[i][jj][k]
 										+ ce_y_2[jj] * (Hz(i,j2,k) - Hz(i,j2-1,k)) / dy;
-					Ex(i,j2,k) = Ex(i,j2,k) + CBx[i][j2][k] * psi_Exy_2[i][jj][k];
+					Ex(i,j2,k) = Ex(i,j2,k) + CB[modelDataX[i][j2][k]] * psi_Exy_2[i][jj][k];
 				}
 				--jj;
 				++j2;
@@ -1249,10 +1426,10 @@ void computePMLE()
 				{
 					psi_Exz_1[i][j][k] = be_z_1[k] * psi_Exz_1[i][j][k]
 									   + ce_z_1[k] * (Hy(i,j,k) - Hy(i,j,k+1)) / dz;
-					Ex(i,j,k) = Ex(i,j,k) + CBx[i][j][k] * psi_Exz_1[i][j][k];
+					Ex(i,j,k) = Ex(i,j,k) + CB[modelDataX[i][j][k]] * psi_Exz_1[i][j][k];
 					psi_Exz_2[i][j][kk] = be_z_2[kk] * psi_Exz_2[i][j][kk]
 										+ ce_z_2[kk] * (Hy(i,j,k2) - Hy(i,j,k2+1)) / dz;
-					Ex(i,j,k2) = Ex(i,j,k2) + CBx[i][j][k2] * psi_Exz_2[i][j][kk];
+					Ex(i,j,k2) = Ex(i,j,k2) + CB[modelDataX[i][j][k2]] * psi_Exz_2[i][j][kk];
 					--kk;
 					++k2;
 				}
@@ -1268,10 +1445,10 @@ void computePMLE()
 				{
 					psi_Eyz_1[i][j][k] = be_z_1[k] * psi_Eyz_1[i][j][k]
 									   + ce_z_1[k] * (Hx(i,j,k+1) - Hx(i,j,k)) / dz;
-					Ey(i,j,k) = Ey(i,j,k) + CBy[i][j][k] * psi_Eyz_1[i][j][k];
+					Ey(i,j,k) = Ey(i,j,k) + CB[modelDataY[i][j][k]] * psi_Eyz_1[i][j][k];
 					psi_Eyz_2[i][j][kk] = be_z_2[kk] * psi_Eyz_2[i][j][kk]
 										+ ce_z_2[kk] * (Hx(i,j,k2+1) - Hx(i,j,k2)) / dz;
-					Ey(i,j,k2) = Ey(i,j,k2) + CBy[i][j][k2] * psi_Eyz_2[i][j][kk];
+					Ey(i,j,k2) = Ey(i,j,k2) + CB[modelDataY[i][j][k2]] * psi_Eyz_2[i][j][kk];
 					--kk;
 					++k2;
 				}
@@ -1287,10 +1464,10 @@ void computePMLE()
 				{
 					psi_Ezy_1[i][j][k] = be_y_1[j] * psi_Ezy_1[i][j][k]
 									   + ce_y_1[j] * (Hx(i,j-1,k) - Hx(i,j,k)) / dy;
-					Ez(i,j,k) = Ez(i,j,k) + CBz[i][j][k] * psi_Ezy_1[i][j][k];
+					Ez(i,j,k) = Ez(i,j,k) + CB[modelDataZ[i][j][k]] * psi_Ezy_1[i][j][k];
 					psi_Ezy_2[i][jj][k] = be_y_2[jj] * psi_Ezy_2[i][jj][k]
 										+ ce_y_2[jj] * (Hx(i,j2-1,k) - Hx(i,j2,k)) / dy;
-					Ez(i,j2,k) = Ez(i,j2,k) + CBz[i][j2][k] * psi_Ezy_2[i][jj][k];
+					Ez(i,j2,k) = Ez(i,j2,k) + CB[modelDataZ[i][j2][k]] * psi_Ezy_2[i][jj][k];
 				}
 				--jj;
 				++j2;
@@ -1312,10 +1489,10 @@ void computePMLE_nprocsSub1()
 				{
 					psi_Exy_1[i][j][k] = be_y_1[j] * psi_Exy_1[i][j][k]
 									   + ce_y_1[j] * (Hz(i,j,k) - Hz(i,j-1,k))/dy;
-					Ex(i,j,k) = Ex(i,j,k) + CBx[i][j][k] * psi_Exy_1[i][j][k];
+					Ex(i,j,k) = Ex(i,j,k) + CB[modelDataX[i][j][k]] * psi_Exy_1[i][j][k];
 					psi_Exy_2[i][jj][k] = be_y_2[jj] * psi_Exy_2[i][jj][k]
 										+ ce_y_2[jj] * (Hz(i,j2,k) - Hz(i,j2-1,k)) / dy;
-					Ex(i,j2,k) = Ex(i,j2,k) + CBx[i][j2][k] * psi_Exy_2[i][jj][k];
+					Ex(i,j2,k) = Ex(i,j2,k) + CB[modelDataX[i][j2][k]] * psi_Exy_2[i][jj][k];
 				}
 				--jj;
 				++j2;
@@ -1332,10 +1509,10 @@ void computePMLE_nprocsSub1()
 				{
 					psi_Exz_1[i][j][k] = be_z_1[k] * psi_Exz_1[i][j][k]
 									   + ce_z_1[k] * (Hy(i,j,k) - Hy(i,j,k+1)) / dz;
-					Ex(i,j,k) = Ex(i,j,k) + CBx[i][j][k] * psi_Exz_1[i][j][k];
+					Ex(i,j,k) = Ex(i,j,k) + CB[modelDataX[i][j][k]] * psi_Exz_1[i][j][k];
 					psi_Exz_2[i][j][kk] = be_z_2[kk] * psi_Exz_2[i][j][kk]
 										+ ce_z_2[kk] * (Hy(i,j,k2) - Hy(i,j,k2+1)) / dz;
-					Ex(i,j,k2) = Ex(i,j,k2) + CBx[i][j][k2] * psi_Exz_2[i][j][kk];
+					Ex(i,j,k2) = Ex(i,j,k2) + CB[modelDataX[i][j][k2]] * psi_Exz_2[i][j][kk];
 					--kk;
 					++k2;
 				}
@@ -1352,7 +1529,7 @@ void computePMLE_nprocsSub1()
 				{
 					psi_Eyx_2[ii][j][k] = be_x_2[ii] * psi_Eyx_2[ii][j][k]
 										+ ce_x_2[ii] * (Hz(i2-1,j,k) - Hz(i2,j,k)) / dx;
-					Ey(i2,j,k) = Ey(i2,j,k) + CBy[i2][j][k] * psi_Eyx_2[ii][j][k];
+					Ey(i2,j,k) = Ey(i2,j,k) + CB[modelDataY[i2][j][k]] * psi_Eyx_2[ii][j][k];
 				}
 			}
 			--ii;
@@ -1369,10 +1546,10 @@ void computePMLE_nprocsSub1()
 				{
 					psi_Eyz_1[i][j][k] = be_z_1[k] * psi_Eyz_1[i][j][k]
 									   + ce_z_1[k] * (Hx(i,j,k+1) - Hx(i,j,k)) / dz;
-					Ey(i,j,k) = Ey(i,j,k) + CBy[i][j][k] * psi_Eyz_1[i][j][k];
+					Ey(i,j,k) = Ey(i,j,k) + CB[modelDataY[i][j][k]] * psi_Eyz_1[i][j][k];
 					psi_Eyz_2[i][j][kk] = be_z_2[kk] * psi_Eyz_2[i][j][kk]
 										+ ce_z_2[kk] * (Hx(i,j,k2+1) - Hx(i,j,k2)) / dz;
-					Ey(i,j,k2) = Ey(i,j,k2) + CBy[i][j][k2] * psi_Eyz_2[i][j][kk];
+					Ey(i,j,k2) = Ey(i,j,k2) + CB[modelDataY[i][j][k2]] * psi_Eyz_2[i][j][kk];
 					--kk;
 					++k2;
 				}
@@ -1389,7 +1566,7 @@ void computePMLE_nprocsSub1()
 				{
 					psi_Ezx_2[ii][j][k] = be_x_2[ii] * psi_Ezx_2[ii][j][k]
 										+ ce_x_2[ii] * (Hy(i2,j,k) - Hy(i2-1,j,k)) / dx;
-					Ez(i2,j,k) = Ez(i2,j,k) + CBz[i2][j][k] * psi_Ezx_2[ii][j][k];
+					Ez(i2,j,k) = Ez(i2,j,k) + CB[modelDataZ[i2][j][k]] * psi_Ezx_2[ii][j][k];
 				}
 			}
 			--ii;
@@ -1406,10 +1583,10 @@ void computePMLE_nprocsSub1()
 				{
 					psi_Ezy_1[i][j][k] = be_y_1[j] * psi_Ezy_1[i][j][k]
 									   + ce_y_1[j] * (Hx(i,j-1,k) - Hx(i,j,k)) / dy;
-					Ez(i,j,k) = Ez(i,j,k) + CBz[i][j][k] * psi_Ezy_1[i][j][k];
+					Ez(i,j,k) = Ez(i,j,k) + CB[modelDataZ[i][j][k]] * psi_Ezy_1[i][j][k];
 					psi_Ezy_2[i][jj][k] = be_y_2[jj] * psi_Ezy_2[i][jj][k]
 										+ ce_y_2[jj] * (Hx(i,j2-1,k) - Hx(i,j2,k)) / dy;
-					Ez(i,j2,k) = Ez(i,j2,k) + CBz[i][j2][k] * psi_Ezy_2[i][jj][k];
+					Ez(i,j2,k) = Ez(i,j2,k) + CB[modelDataZ[i][j2][k]] * psi_Ezy_2[i][jj][k];
 				}
 				--jj;
 				++j2;
@@ -1426,7 +1603,7 @@ void computeOneCPU()
 	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	//  BEGIN TIME STEP
 	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-	printf("\nBegin time-stepping...\n");
+	printf("Begin time-stepping...\n");
 	tStart = time(NULL);
 
 	int i2, j2, k2;
@@ -1434,7 +1611,7 @@ void computeOneCPU()
 	for(n = 1; n <= nMax; ++n)
 	{
 		if(n % dn == 0)
-			printf("Time = %d, %f seconds for one step, %d / %d seconds left.\n",
+			printf("Step: %d, %fsec/step, %d/%d sec left/total.\n",
 					n, tStep, (int)((nMax-n+1) * tStep), (int)(nMax * tStep) );
 
 		//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -1618,7 +1795,7 @@ void computeOneCPU()
 			{
 				for(k = 0; k < Kmax-1; ++k)
 				{
-					Ex(i,j,k) = CAx[i][j][k] * Ex(i,j,k) + CBx[i][j][k] *
+					Ex(i,j,k) = CA[modelDataX[i][j][k]] * Ex(i,j,k) + CB[modelDataX[i][j][k]] *
 								  ((Hz(i,j,k) - Hz(i,j-1,k)) * den_ey[j] +
 								  (Hy(i,j,k) - Hy(i,j,k+1)) * den_ez[k] );
 				}
@@ -1635,10 +1812,10 @@ void computeOneCPU()
 				{
 					psi_Exy_1[i][j][k] = be_y_1[j] * psi_Exy_1[i][j][k]
 									   + ce_y_1[j] * (Hz(i,j,k) - Hz(i,j-1,k))/dy;
-					Ex(i,j,k) = Ex(i,j,k) + CBx[i][j][k] * psi_Exy_1[i][j][k];
+					Ex(i,j,k) = Ex(i,j,k) + CB[modelDataX[i][j][k]] * psi_Exy_1[i][j][k];
 					psi_Exy_2[i][jj][k] = be_y_2[jj] * psi_Exy_2[i][jj][k]
 										+ ce_y_2[jj] * (Hz(i,j2,k) - Hz(i,j2-1,k)) / dy;
-					Ex(i,j2,k) = Ex(i,j2,k) + CBx[i][j2][k] * psi_Exy_2[i][jj][k];
+					Ex(i,j2,k) = Ex(i,j2,k) + CB[modelDataX[i][j2][k]] * psi_Exy_2[i][jj][k];
 				}
 				--jj;
 				++j2;
@@ -1655,10 +1832,10 @@ void computeOneCPU()
 				{
 					psi_Exz_1[i][j][k] = be_z_1[k] * psi_Exz_1[i][j][k]
 									   + ce_z_1[k] * (Hy(i,j,k) - Hy(i,j,k+1)) / dz;
-					Ex(i,j,k) = Ex(i,j,k) + CBx[i][j][k] * psi_Exz_1[i][j][k];
+					Ex(i,j,k) = Ex(i,j,k) + CB[modelDataX[i][j][k]] * psi_Exz_1[i][j][k];
 					psi_Exz_2[i][j][kk] = be_z_2[kk] * psi_Exz_2[i][j][kk]
 										+ ce_z_2[kk] * (Hy(i,j,k2) - Hy(i,j,k2+1)) / dz;
-					Ex(i,j,k2) = Ex(i,j,k2) + CBx[i][j][k2] * psi_Exz_2[i][j][kk];
+					Ex(i,j,k2) = Ex(i,j,k2) + CB[modelDataX[i][j][k2]] * psi_Exz_2[i][j][kk];
 					--kk;
 					++k2;
 				}
@@ -1674,7 +1851,7 @@ void computeOneCPU()
 			{
 				for(k = 0; k < Kmax-1; ++k)
 				{
-					Ey(i,j,k) = CAy[i][j][k] * Ey(i,j,k) + CBy[i][j][k] *
+					Ey(i,j,k) = CA[modelDataY[i][j][k]] * Ey(i,j,k) + CB[modelDataY[i][j][k]] *
 								   ((Hz(i-1,j,k) - Hz(i,j,k)) * den_ex[i] +
 								   (Hx(i,j,k+1) - Hx(i,j,k)) * den_ez[k] );
 				}
@@ -1691,10 +1868,10 @@ void computeOneCPU()
 				{
 					psi_Eyx_1[i][j][k] = be_x_1[i] * psi_Eyx_1[i][j][k]
 									   + ce_x_1[i] * (Hz(i-1,j,k) - Hz(i,j,k)) / dx;
-					Ey(i,j,k) = Ey(i,j,k) + CBy[i][j][k] * psi_Eyx_1[i][j][k];
+					Ey(i,j,k) = Ey(i,j,k) + CB[modelDataY[i][j][k]] * psi_Eyx_1[i][j][k];
 					psi_Eyx_2[ii][j][k] = be_x_2[ii] * psi_Eyx_2[ii][j][k]
 										+ ce_x_2[ii] * (Hz(i2-1,j,k) - Hz(i2,j,k)) / dx;
-					Ey(i2,j,k) = Ey(i2,j,k) + CBy[i2][j][k] * psi_Eyx_2[ii][j][k];
+					Ey(i2,j,k) = Ey(i2,j,k) + CB[modelDataY[i2][j][k]] * psi_Eyx_2[ii][j][k];
 				}
 			}
 			--ii;
@@ -1711,10 +1888,10 @@ void computeOneCPU()
 				{
 					psi_Eyz_1[i][j][k] = be_z_1[k] * psi_Eyz_1[i][j][k]
 									   + ce_z_1[k] * (Hx(i,j,k+1) - Hx(i,j,k)) / dz;
-					Ey(i,j,k) = Ey(i,j,k) + CBy[i][j][k] * psi_Eyz_1[i][j][k];
+					Ey(i,j,k) = Ey(i,j,k) + CB[modelDataY[i][j][k]] * psi_Eyz_1[i][j][k];
 					psi_Eyz_2[i][j][kk] = be_z_2[kk] * psi_Eyz_2[i][j][kk]
 										+ ce_z_2[kk] * (Hx(i,j,k2+1) - Hx(i,j,k2)) / dz;
-					Ey(i,j,k2) = Ey(i,j,k2) + CBy[i][j][k2] * psi_Eyz_2[i][j][kk];
+					Ey(i,j,k2) = Ey(i,j,k2) + CB[modelDataY[i][j][k2]] * psi_Eyz_2[i][j][kk];
 					--kk;
 					++k2;
 				}
@@ -1730,7 +1907,7 @@ void computeOneCPU()
 			{
 				for(k = 1; k < Kmax-1; ++k)
 				{
-					Ez(i,j,k) = CAz[i][j][k] * Ez(i,j,k) + CBz[i][j][k]
+					Ez(i,j,k) = CA[modelDataZ[i][j][k]] * Ez(i,j,k) + CB[modelDataZ[i][j][k]]
 								* ((Hy(i,j,k) - Hy(i-1,j,k)) * den_ex[i] +
 								(Hx(i,j-1,k) - Hx(i,j,k)) * den_ey[j]);
 				}
@@ -1747,10 +1924,10 @@ void computeOneCPU()
 				{
 					psi_Ezx_1[i][j][k] = be_x_1[i] * psi_Ezx_1[i][j][k]
 									   + ce_x_1[i] * (Hy(i,j,k) - Hy(i-1,j,k)) / dx;
-					Ez(i,j,k) = Ez(i,j,k) + CBz[i][j][k] * psi_Ezx_1[i][j][k];
+					Ez(i,j,k) = Ez(i,j,k) + CB[modelDataZ[i][j][k]] * psi_Ezx_1[i][j][k];
 					psi_Ezx_2[ii][j][k] = be_x_2[ii] * psi_Ezx_2[ii][j][k]
 										+ ce_x_2[ii] * (Hy(i2,j,k) - Hy(i2-1,j,k)) / dx;
-					Ez(i2,j,k) = Ez(i2,j,k) + CBz[i2][j][k] * psi_Ezx_2[ii][j][k];
+					Ez(i2,j,k) = Ez(i2,j,k) + CB[modelDataZ[i2][j][k]] * psi_Ezx_2[ii][j][k];
 				}
 			}
 			--ii;
@@ -1767,10 +1944,10 @@ void computeOneCPU()
 				{
 					psi_Ezy_1[i][j][k] = be_y_1[j] * psi_Ezy_1[i][j][k]
 									   + ce_y_1[j] * (Hx(i,j-1,k) - Hx(i,j,k)) / dy;
-					Ez(i,j,k) = Ez(i,j,k) + CBz[i][j][k] * psi_Ezy_1[i][j][k];
+					Ez(i,j,k) = Ez(i,j,k) + CB[modelDataZ[i][j][k]] * psi_Ezy_1[i][j][k];
 					psi_Ezy_2[i][jj][k] = be_y_2[jj] * psi_Ezy_2[i][jj][k]
 										+ ce_y_2[jj] * (Hx(i,j2-1,k) - Hx(i,j2,k)) / dy;
-					Ez(i,j2,k) = Ez(i,j2,k) + CBz[i][j2][k] * psi_Ezy_2[i][jj][k];
+					Ez(i,j2,k) = Ez(i,j2,k) + CB[modelDataZ[i][j2][k]] * psi_Ezy_2[i][jj][k];
 				}
 				--jj;
 				++j2;
@@ -1787,10 +1964,23 @@ void computeOneCPU()
 	//  WRITE TO OUTPUT FILES
 	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 		saveData(n);
+#ifdef _SAR
+		for (i = 0; i<save_localSAR_amount+1; ++i)
+		{
+			computeRMS(&pSAR[i], n);
+		}
+#endif
 
 		tCurrent = time(NULL);
 		tStep = (tCurrent - tStart)/(double)(n + 1);
-	}
+	}//  END TIME STEP
+	free(Ex);
+	free(Ey);
+	free(Ez);
+	free(Hx);
+	free(Hy);
+	free(Hz);
+
 	for (i = 0; i < save_plane_amount; i++)
 	{
 		fclose(fp_save_field_file[i].ex);
@@ -1800,9 +1990,30 @@ void computeOneCPU()
 		fclose(fp_save_field_file[i].hy);
 		fclose(fp_save_field_file[i].hz);
 	}
-	//  END TIME STEP
-	printf("Done time-stepping...\n");
+	flag = 13; /* End FDTD Iteration */
+#ifdef _SAR
+	for (i = 0; i<save_localSAR_amount; ++i)
+	{
+		computeLocalSAR(pSAR[i], pSAR[i+1], &pSAR[i].localSARData);
+	}
+
+	for (i = 0; i<save_localSAR_amount; ++i)
+	{
+		//writeLocalSAR(pSAR[i].fp, pSAR[i].localSARData);
+		//fclose(pSAR[i].fp);
+	}
+#endif
+
+#ifdef _SAR
+	if (nXgSAR)
+	{
+		computeXgSAR(nXgSAR);
+	}
+#endif
+	tCurrent = time(NULL);
+	printf("All computational tasks are completed.\n");
 	printf("Total time consumption : %d second.\n", tCurrent - tStart);
+	fprintf(fp_log, "Total time consumption : %d second.\n", tCurrent - tStart);
 }
 
 /*****************************************************************************************/
@@ -1835,7 +2046,7 @@ double radiationPower(radiation_region rad_region)
 	for(i = xStart; i<=xEnd; ++i)
 		for(j = yStart; j<=yEnd; ++j)
 		{
-			ex1 = ( ( (Ex(i,j,zStart-1)  +preEx(i,j,zStart-1)  )/2/* 估算前1/2时间步的场值 */
+			ex1 = ( ( (Ex(i,j,zStart-1)  +preEx(i,j,zStart-1)  )/2
 					 +(Ex(i,j,zStart)    +preEx(i,j,zStart)    )/2 )/2
 				  + ( (Ex(i-1,j,zStart-1)+preEx(i-1,j,zStart-1))/2
 					 +(Ex(i-1,j,zStart)  +preEx(i-1,j,zStart)  )/2 )/2
@@ -1942,7 +2153,7 @@ double radiationPower(radiation_region rad_region)
 		}
 	radP_xz *= dx*dz;
 
-	return (radP_xy+radP_xz+radP_yz)/2;
+	return (radP_xy+radP_xz+radP_yz);
 }
 #endif
 
@@ -1955,7 +2166,7 @@ void computeOneCPU_Mur2()
 	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	//  BEGIN TIME STEP
 	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-	printf("\nBegin time-stepping...\n");
+	printf("Begin time-stepping...\n");
 	tStart = time(NULL);
 
 	/* Mur2 */
@@ -1976,7 +2187,7 @@ void computeOneCPU_Mur2()
 	for(n = 1; n <= nMax; ++n)
 	{
 		if(n % dn == 0)
-			printf("Time = %d, %f seconds for one step, %d / %d seconds left.\n",
+			printf("Step: %d, %fsec/step, %d/%d sec left/total.\n",
 					n, tStep, (int)((nMax-n+1) * tStep), (int)(nMax * tStep) );
 
 		//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -2071,7 +2282,7 @@ void computeOneCPU_Mur2()
 			{
 				for(k = ks; k <= ke-1; ++k)
 				{
-					Ex(i,j,k) = CAx[i][j][k] * Ex(i,j,k) + CBx[i][j][k] *
+					Ex(i,j,k) = CA[modelDataX[i][j][k]] * Ex(i,j,k) + CB[modelDataX[i][j][k]] *
 								  ((Hz(i,j,k) - Hz(i,j-1,k)) / dy +
 								  (Hy(i,j,k) - Hy(i,j,k+1)) / dz );
 				}
@@ -2217,7 +2428,7 @@ void computeOneCPU_Mur2()
 			{
 				for(k = ks+1; k <= ke-2; ++k)
 				{
-					Ey(i,j,k) = CAy[i][j][k] * Ey(i,j,k) + CBy[i][j][k] *
+					Ey(i,j,k) = CA[modelDataY[i][j][k]] * Ey(i,j,k) + CB[modelDataY[i][j][k]] *
 								   ((Hz(i-1,j,k) - Hz(i,j,k)) / dx +
 								   (Hx(i,j,k+1) - Hx(i,j,k)) / dz );
 				}
@@ -2363,7 +2574,7 @@ void computeOneCPU_Mur2()
 			{
 				for(k = ks+1; k <= ke-1; ++k)
 				{
-					Ez(i,j,k) = CAz[i][j][k] * Ez(i,j,k) + CBz[i][j][k]
+					Ez(i,j,k) = CA[modelDataZ[i][j][k]] * Ez(i,j,k) + CB[modelDataZ[i][j][k]]
 								* ((Hy(i,j,k) - Hy(i-1,j,k)) / dx +
 								(Hx(i,j-1,k) - Hx(i,j,k)) / dy);
 				}
@@ -2510,10 +2721,24 @@ void computeOneCPU_Mur2()
 	//  WRITE TO OUTPUT FILES
 	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 		saveData(n);
+#ifdef _SAR
+		for (i = 0; i<save_localSAR_amount+1; ++i)
+		{
+			computeRMS(&pSAR[i], n);
+		}
+#endif
 
 		tCurrent = time(NULL);
 		tStep = (tCurrent - tStart)/(double)(n + 1);
-	}
+	}//  END TIME STEP
+
+	free(Ex);
+	free(Ey);
+	free(Ez);
+	free(Hx);
+	free(Hy);
+	free(Hz);
+
 	for (i = 0; i < save_plane_amount; i++)
 	{
 		fclose(fp_save_field_file[i].ex);
@@ -2523,8 +2748,43 @@ void computeOneCPU_Mur2()
 		fclose(fp_save_field_file[i].hy);
 		fclose(fp_save_field_file[i].hz);
 	}
-	//  END TIME STEP
-	printf("Done time-stepping...\n");
+	flag = 13; /* End FDTD Iteration */
+#ifdef _SAR
+	for (i = 0; i<save_localSAR_amount; ++i)
+	{
+		computeLocalSAR(pSAR[i], pSAR[i+1], &pSAR[i].localSARData);
+	}
+
+	for (i = 0; i<save_localSAR_amount; ++i)
+	{
+		//writeLocalSAR(pSAR[i].fp, pSAR[i].localSARData);
+		//fclose(pSAR[i].fp);
+	}
+#endif
+
+#ifdef _SAR
+	if (nXgSAR)
+	{
+		computeXgSAR(nXgSAR);
+	}
+#endif		
+	tCurrent = time(NULL);
+	printf("All computational tasks are completed.\n");
 	printf("Total time consumption : %d second.\n", tCurrent - tStart);
+	fprintf(fp_log, "Total time consumption : %d second.\n", tCurrent - tStart);
+}
+
+void saveMaxE() {
+    int i, j, k;
+    double currE = 0;
+    for (i = outputRangeE[0]; i<outputRangeE[1]; ++i) {
+        for (j = outputRangeE[2]; j<outputRangeE[3]; ++j) {
+            for (k = outputRangeE[4]; k<outputRangeE[5]; ++k) {
+                currE = sqrt( pow(Ex(i, j, k-1), 2) + pow(Ey(i, j, k-1), 2) + pow(Ez(i, j, k), 2) );
+                if (currE > (*maxE)[i][j][k])
+                    (*maxE)[i][j][k] = currE;
+            }
+        }
+    }
 }
 

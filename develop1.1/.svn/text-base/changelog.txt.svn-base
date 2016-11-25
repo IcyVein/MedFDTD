@@ -1,5 +1,0 @@
-update 20110920: 
-1. Add makefile.
-2. Add a function "buildPlane", user can create a 2D plane by this function;
-3. Fix bug in function "buildWire". This bug cause the antenna will not be created when antenna direction equal to 1 or 2 (means 'x' or 'y').
-4. Now we have a more detailed user's guide.

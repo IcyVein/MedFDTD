@@ -1,13 +1,20 @@
-void setUp()
+int setUp()
 {
-	//Time step
-	dt = 1.0 / (C * sqrt(1.0 / (dx * dx) + 1.0 / (dy * dy) + 1.0 / (dz * dz)));
-
 	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	//  COMPUTING FIELD UPDATE EQUATION COEFFICIENTS
 	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	DA = 1.0;
 	DB = dt / muO;
+	media[0].epsilon = 1.0; /* Vaccum */
+    media[0].epsilon_inf = 1.0;
+    media[0].delay= 0.0;
+	media[0].sigma = 0.0;
+	media[0].rho = 0.0;
+	media[1].epsilon = 0.0; /* PEC */
+    media[1].epsilon_inf = 0.0;
+    media[1].delay= 0.0;
+	media[1].sigma = 0.0;
+	media[1].rho = 0.0;
 
 	//~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 	//  LOAD MODEL AND COMPUTE CA,CB
@@ -17,41 +24,55 @@ void setUp()
 	size[2] = _spaceZ;
 
 	//FILE to Load
-	strcpy(path_eps, path_data);
-	strcat(path_eps, data_name_eps);
-	strcpy(path_sigma, path_data);
-	strcat(path_sigma, data_name_sigma);
-	strcpy(path_rho, path_data);
-	strcat(path_rho, data_name_rho);
+    /*
+	strcpy(path_model, path_data);
+	strcat(path_model, model_name);
+	strcpy(path_media, path_data);
+	strcat(path_media, media_name);*/
+    sprintf(path_model, "%s%s", path_data, model_name);
+    sprintf(path_media, "%s%s", path_data, media_name);
 	
-	epsilon = loadData3(path_eps, size, 1.0);
-	sigma = loadData3(path_sigma, size, 0.0);
-#ifdef _SAR
-	rho = loadData3(path_rho, size, 0.0);
-#endif
+    if (media_dispersion == 1)
+    {
+        if (loadMediaData_Dispersion(path_media, mediaNum) == MEM_ERROR)
+            return MEM_ERROR;
+    }
+    else
+    {
+	    if (loadMediaData(path_media, mediaNum) == MEM_ERROR)
+            return MEM_ERROR;
+    }
+	try
+	{
+		modelData = loadData3(path_model, size);
+	}
+	catch(int &er)
+	{
+		exit(MEM_ERROR);
+	}
+
+	CA[0] = 1.0;	/* vaccum */
+	CB[0] = dt/epsO;
+    CB_PML[0] = dt/epsO;
+	CA[1] = 0.0;	/* PEC */
+	CB[1] = 0.0;
+	CB_PML[1] = 0.0;
 
 	if (nprocs == 1)
 		loadModelOneCPU();
 	else
 		loadModel();
-	freeArray3(epsilon, spaceX, spaceY, spaceZ);
-	freeArray3(sigma, spaceX, spaceY, spaceZ);
+	freeArray3Char(modelData, spaceX, spaceY, spaceZ);
 
 	buildObject();
-	loadCACB();
 
 	if (myrank != nprocs-1 && nprocs>1)
 		Imax = Imax + 1;
 	else if (nprocs == 1)
 		Imax = Imax - 1;
-	freeArray3(ID1_EpsR, Imax+1, Jmax, Kmax);
-	freeArray3(ID2_EpsR, Imax+1, Jmax, Kmax);
-	freeArray3(ID3_EpsR, Imax+1, Jmax, Kmax);
-#ifndef _SAR
-	freeArray3(ID1_SigR, Imax+1, Jmax, Kmax);
-	freeArray3(ID2_SigR, Imax+1, Jmax, Kmax);
-	freeArray3(ID3_SigR, Imax+1, Jmax, Kmax);
-#endif
+/*	freeArray3Char(modelDataX, Imax+1, Jmax, Kmax);
+	freeArray3Char(modelDataY, Imax+1, Jmax, Kmax);
+	freeArray3Char(modelDataZ, Imax+1, Jmax, Kmax);*/
 	if (myrank != nprocs-1 && nprocs>1)
 		Imax = Imax - 1;
 	else if (nprocs == 1)
@@ -79,9 +100,13 @@ void setUp()
 		printf("Number of steps = %d\n", nMax);
 		printf("Size of Simulation region = %d X %d X %d\n", spaceX, spaceY, spaceZ);
 		printf("Total Simulation time = %e Seconds\n", nMax * dt);
-		printf("Total Memory requirements = %ld KB\n", mem_count / 1024);
+		fprintf(fp_log, "Time step = %e\n", dt);
+		fprintf(fp_log, "Number of steps = %d\n", nMax);
+		fprintf(fp_log, "Size of Simulation region = %d X %d X %d\n", spaceX, spaceY, spaceZ);
+		fprintf(fp_log, "Total Simulation time = %e Seconds\n", nMax * dt);
 		fflush(stdout);
 	}
+	return SUCCESS;
  }
 
 //~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -502,139 +527,37 @@ void setUpCPML()
 	free(sigh_z_PML_2);
 }
 
-void loadCACB()
+void yeeCubeCap (int I, int J, int K, unsigned char mediaNo)
 {
-	int i, j, k;
-	double epsr, sigr;
-	if(myrank != nprocs-1 && nprocs >1)
-		Imax = Imax+1;
-	else if (nprocs == 1)
-		Imax = Imax-1;//i range from 0(1) to Imax-1
-	for(i = 0; i < Imax; ++i)
-	{
-		for(j = 1; j < Jmax-1; ++j)
-		{
-			for(k = 0; k < Kmax-1; ++k)
-			{
-					epsr = ID1_EpsR[i][j][k];
-					sigr = ID1_SigR[i][j][k];
-
-					if (epsr < -0.1)
-					{
-						CAx[i][j][k] = 0;
-						CBx[i][j][k] = 0;
-						continue;
-					}
-				CAx[i][j][k] = (1.0 - sigr * dt / (2.0 * epsr * epsO)) /
-								(1.0 + sigr * dt / (2.0 * epsr * epsO));
-				CBx[i][j][k] = (dt / (epsr * epsO)) /
-								(1.0 + sigr * dt / (2.0 * epsr * epsO));
-			}
-		}
-	}
-
-	for(k = 0; k < Kmax-1; ++k)
-	{
-		for(i = 1; i < Imax; ++i)
-		{
-			for(j = 0; j < Jmax-1; ++j)
-			{
-					epsr = ID2_EpsR[i][j][k];
-					sigr = ID2_SigR[i][j][k];
-
-					if (epsr < -0.1)
-					{
-						CAy[i][j][k] = 0;
-						CBy[i][j][k] = 0;
-						continue;
-					}
-				CAy[i][j][k] = (1.0 - sigr * dt / (2.0 * epsr * epsO)) /
-								(1.0 + sigr * dt / (2.0 * epsr * epsO));
-				CBy[i][j][k] = (dt / (epsr * epsO)) /
-								(1.0 + sigr * dt / (2.0 * epsr * epsO));
-			}
-		}
-	}
-	for(k = 1; k < Kmax-1; ++k)
-	{
-		for(i = 1; i < Imax; ++i)
-		{
-			for(j = 1; j < Jmax-1; ++j)
-			{
-					epsr = ID3_EpsR[i][j][k];
-					sigr = ID3_SigR[i][j][k];
-
-					if (epsr < -0.1)
-					{
-						CAz[i][j][k] = 0;
-						CBz[i][j][k] = 0;
-						continue;
-					}
-				CAz[i][j][k] = (1.0 - sigr * dt / (2.0 * epsr * epsO)) /
-								(1.0 + sigr * dt / (2.0 * epsr * epsO));
-				CBz[i][j][k] = (dt / (epsr * epsO)) /
-								(1.0 + sigr * dt / (2.0 * epsr * epsO));
-			}
-		}
-	}
-	if(myrank != nprocs-1 && nprocs>1)
-		Imax = Imax-1;
-	else if (nprocs == 1)
-		Imax = Imax+1;
+    if (fabs(media[mediaNo].epsilon-1)<1e-6)
+    	modelDataX[I][J][K-1] = mediaNo;
+    else if (fabs(media[mediaNo].epsilon-2)<1e-6)
+	    modelDataY[I][J][K-1] = mediaNo;
+    else if (fabs(media[mediaNo].epsilon-3)<1e-6)
+	    modelDataZ[I][J][K] = mediaNo;
 }
 
-void yeeCube (int I, int J, int K, double EpsR, double SigR, double RhoR)
+void yeeCube (int I, int J, int K, unsigned char mediaNo)
 {
 	K=K-1;
 	//set face 1 (for EX)
-	ID1_EpsR[I][J][K] = EpsR;
-	ID1_EpsR[I][J][K + 1] = EpsR;
-	ID1_EpsR[I][J + 1][K + 1] = EpsR;
-	ID1_EpsR[I][J + 1][K] = EpsR;
-	ID1_SigR[I][J][K] = SigR;
-	ID1_SigR[I][J][K + 1] = SigR;
-	ID1_SigR[I][J + 1][K + 1] = SigR;
-	ID1_SigR[I][J + 1][K] = SigR;
+	modelDataX[I][J][K] = mediaNo;
+	modelDataX[I][J][K + 1] = mediaNo;
+	modelDataX[I][J + 1][K + 1] = mediaNo;
+	modelDataX[I][J + 1][K] = mediaNo;
 
 	//set face 2 (for EY)
-	ID2_EpsR[I][J][K] = EpsR;
-	ID2_EpsR[I + 1][J][K] = EpsR;
-	ID2_EpsR[I + 1][J][K + 1] = EpsR;
-	ID2_EpsR[I][J][K + 1] = EpsR;
-	ID2_SigR[I][J][K] = SigR;
-	ID2_SigR[I + 1][J][K] = SigR;
-	ID2_SigR[I + 1][J][K + 1] = SigR;
-	ID2_SigR[I][J][K + 1] = SigR;
+	modelDataY[I][J][K] = mediaNo;
+	modelDataY[I + 1][J][K] = mediaNo;
+	modelDataY[I + 1][J][K + 1] = mediaNo;
+	modelDataY[I][J][K + 1] = mediaNo;
 
 	K=K+1;
 	//set face 3 (for EZ)
-	ID3_EpsR[I][J][K] = EpsR;
-	ID3_EpsR[I + 1][J][K] = EpsR;
-	ID3_EpsR[I + 1][J + 1][K] = EpsR;
-	ID3_EpsR[I][J + 1][K] = EpsR;
-	ID3_SigR[I][J][K] = SigR;
-	ID3_SigR[I + 1][J][K] = SigR;
-	ID3_SigR[I + 1][J + 1][K] = SigR;
-	ID3_SigR[I][J + 1][K] = SigR;
-
-#ifdef _SAR
-	K = K-1;
-	ID1_RhoR[I][J][K] = RhoR;
-	ID1_RhoR[I][J][K + 1] = RhoR;
-	ID1_RhoR[I][J + 1][K + 1] = RhoR;
-	ID1_RhoR[I][J + 1][K] = RhoR;
-
-	ID2_RhoR[I][J][K] = RhoR;
-	ID2_RhoR[I + 1][J][K] = RhoR;
-	ID2_RhoR[I + 1][J][K + 1] = RhoR;
-	ID2_RhoR[I][J][K + 1] = RhoR;
-
-	K = K+1;
-	ID3_RhoR[I][J][K] = RhoR;
-	ID3_RhoR[I + 1][J][K] = RhoR;
-	ID3_RhoR[I + 1][J + 1][K] = RhoR;
-	ID3_RhoR[I][J + 1][K] = RhoR;
-#endif
+	modelDataZ[I][J][K] = mediaNo;
+	modelDataZ[I + 1][J][K] = mediaNo;
+	modelDataZ[I + 1][J + 1][K] = mediaNo;
+	modelDataZ[I][J + 1][K] = mediaNo;
 }
 
 /*****************************************************************************************/
@@ -656,11 +579,18 @@ double* loadSRC(char* path)
 		printf("Open data file ");
 		printf(path);
 		printf(" fail.\n");
-		fflush(stdout);
+		if (myrank == 0)
+        {
+            fprintf(fp_log, "Open data file ");
+		    fprintf(fp_log, path);
+		    fprintf(fp_log, " fail.\n");
+        }
+        fflush(stdout);
 		return (NULL);
 	}
 	fscanf(fp,"%d\n", &sizeSRC);
 	A = (double *)malloc(sizeSRC * sizeof(double));
+    mem_count += sizeSRC*sizeof(double);
 	for (ldi = 0; ldi < sizeSRC; ldi++)
 	{
 		fscanf(fp, "%lf\t%lf\n", &A[ldi], &temp);
@@ -681,27 +611,38 @@ double* loadSRC(char* path)
  * Return: 
  *			 Point to 3D Array
  */
-double*** loadData3(char* path, int* size, double defauleValue)
+unsigned char*** loadData3(char* path, int* size)
 {
+    int i;
 	int ldi, ldj, ldk;
-	double*** A;
+	int schedule = 0, schedule_past = 0; 
+	unsigned char*** A;
+	int temp_data;
+	unsigned char temp_c;
 	FILE *fp;
 	time_t load_time;
 
-	A = initArray3(size[0] + paddingX_1 + paddingX_2 + 1,
-				   size[1] + paddingY_1 + paddingY_2 + 1,
-				   size[2] + paddingZ_1 + paddingZ_2 + 1,
-				   defauleValue);
+	A = initArray3Char(size[0] + paddingX_1 + paddingX_2 + 1,
+						size[1] + paddingY_1 + paddingY_2 + 1,
+						size[2] + paddingZ_1 + paddingZ_2 + 1);
 
 	if (path == NULL)
+	{
+		printf("None model import\n");
+		fflush(stdout);
 		return (A);
+	}
 
 	if (!(fp = fopen(path,"r")))
 	{
 		printf("Open data file ");
 		printf(path);
 		printf(" fail in CPU%d.\n", myrank);
-		fflush(stdout);
+		if (myrank == 0)
+        {
+            fprintf(fp_log, "Can't open model file in %s\n", path);
+        }
+        fflush(stdout);
 		return (A);
 	}
 
@@ -713,15 +654,34 @@ double*** loadData3(char* path, int* size, double defauleValue)
 		{
 			for (ldi = paddingX_1; ldi < size[0] + paddingX_1 - 1; ldi++)
 			{
-				fscanf(fp, "%lf ", &A[ldi][ldj][ldk]);
+				fscanf(fp, "%d ", &temp_data);
+				A[ldi][ldj][ldk] = temp_data;
 			}
-			fscanf(fp, "%lf\n", &A[ldi][ldj][ldk]);
+			fscanf(fp, "%d", &temp_data);
+			A[ldi][ldj][ldk] = temp_data;
+			fscanf(fp, "%c", &temp_c);
+			if (temp_c != '\n')
+			{/*
+				printf("Model file error in (%d, %d, %d), end with %d char\n", ldi-paddingX_1, ldj-paddingY_1, ldk-paddingZ_1, (int)temp_c);
+				throw MEM_ERROR;
+			*/}
 		}
-		if(clock() - load_time > 2000)
+		schedule_past = schedule;
+		schedule = (int)((ldk-paddingZ_1)/(double)(size[2]-1)*20);
+		if(clock() - load_time > 2000 || schedule-schedule_past)
 		{
 			if (myrank == 0)
 			{
-				printf("\rLoading %s : %4.2f%%", path, (ldk-paddingZ_1)/(double)(size[2]-1)*100);
+				printf("\rLoading model: |");
+                for (i = 0; i<schedule; ++i)
+				{
+                    printf("=");
+				}
+                for (i = schedule; i<20; ++i)
+				{
+                    printf(" ");
+				}
+                printf("| %4.1f%%", (ldk-paddingZ_1)/(double)(size[2]-1)*100);
 				fflush(stdout);
 			}
 			load_time = clock();
@@ -730,11 +690,96 @@ double*** loadData3(char* path, int* size, double defauleValue)
 
 	if (myrank == 0)
 	{
-		printf("\rLoading %s : 100.00%%\n", path);
+		printf("\n");
+		fprintf(fp_log, "Loading model from %s\n", path);
 		fflush(stdout);
 	}
 	fclose(fp);
 	return (A);
+}
+
+int loadMediaData(char* path, int size)
+{
+	int i;
+	int id;
+	double eps, sig, rho, spec_heat, K, B;
+	FILE* fp = fopen(path, "r");
+	if (fp == NULL)	
+	{
+		printf("Open data file %s fail in CPU%d\n", path, myrank);
+		if (myrank == 0)
+	        fprintf(fp_log, "Can't open media file in %s\n", path);
+		fflush(stdout);
+		return FILE_ERROR;
+	}
+	for (i = 0; i<size; ++i)
+	{
+		fscanf(fp, "%d %lf %lf %lf", &id, &sig, &eps, &rho);
+		if (id>=maxMedia) maxMedia = id+1;// BUILDOBJECTS\createNewMedia函数需要的数据
+        if (need_compute_temperature_rise)
+        {
+            fscanf(fp, " %lf %lf %lf", &spec_heat, &K, &B);
+        }
+        fscanf(fp, "\n");
+        if (id == 0 || id == 1)
+        {
+            printf("Media id cannot be 0(vaccum) or 1(pec), quit.\n");
+            fflush(stdout);
+            fprintf(fp_log, "Media id cannot be 0(vaccum) or 1(pec), quit.\n");
+            return MEM_ERROR;
+        }
+        if (id == 201) // 电容器，数据格式为："id 电容值 极化方向 0\n"
+        {
+            media[i].sigma = sig;// 电容值C
+		    media[id].epsilon = eps;// 极化方向1——3 ——> x——z
+		    media[id].rho= rho;
+            CA[id] = 1.0;
+            double tempPolar = 0.0;
+            if (fabs(eps-1)<1e-6)
+                tempPolar = dx/dy/dz;
+            else if (fabs(eps-2)<1e-6)
+                tempPolar = dy/dx/dz;
+            else if (fabs(eps-3)<1e-6)
+                tempPolar = dz/dx/dy;
+            else
+            {
+                printf("电容器极性设置错误，请重新设置（1-->x, 2-->y, 3-->z），当前设置为%lf\n", eps);
+                fflush(stdout);
+                return MEM_ERROR;
+            }
+            CA[id] = 1.0;
+            CB[id] = dt/epsO/(1.0 + sig*tempPolar/epsO);
+        }
+		media[id].sigma= sig;
+		media[id].epsilon = eps;
+		media[id].rho= rho;
+        if (need_compute_temperature_rise)
+        {
+			media[id].spec_heat = spec_heat;
+            media[id].K = K;
+            media[id].B = B;
+        }
+		CA[id] = ((1.0 - sig * dt / (2.0 * eps * epsO))
+				/ (1.0 + sig * dt / (2.0 * eps * epsO)));
+		CB[id] = (dt / (eps * epsO))
+				/ (1.0 + sig * dt / (2.0 * eps * epsO));
+	}
+	if (maxMedia > MAX_NUM_OF_MEDIA && myrank == 0)
+	{
+		printf("Too many media!\n");
+		fprintf(fp_log, "Too many media!\n");
+		fflush(stdout);
+		return MEM_ERROR;
+	}
+    if (need_compute_temperature_rise)
+	{
+		media[0].rho = 1.4128;
+		media[0].spec_heat = 1012;
+		media[0].K = 0.023;
+		media[0].B = 0.0;
+	}
+
+	return SUCCESS;
 }
 
 /*****************************************************************************************/
@@ -764,12 +809,14 @@ void loadModel()
 			{
 				for(k = nzPML_1; k < Kmax - nzPML_2; k++)
 				{
-					if (fabs(epsilon[i - nxPML_1][j - nyPML_1][k - nzPML_1] - 1) < 1e-6 &&
-						fabs(sigma[i - nxPML_1][j - nyPML_1][k - nzPML_1]) < 1e-6)
+					if (modelData[i - nxPML_1][j - nyPML_1][k - nzPML_1] == 0) /* vaccum */
 						continue;
-						yeeCube(i+change_by_is, j, k, epsilon[i - nxPML_1][j - nyPML_1][k - nzPML_1], 
-													  sigma[i - nxPML_1][j - nyPML_1][k - nzPML_1],
-													  rho[i - nxPML_1][j - nyPML_1][k - nzPML_1]);
+                    if (modelData[i - nxPML_1][j - nyPML_1][k - nzPML_1] == 201) // 电容器
+                    {
+                        yeeCubeCap(i+change_by_is, j, k, modelData[i - nxPML_1][j - nyPML_1][k - nzPML_1]);
+                    }
+                    else
+					    yeeCube(i+change_by_is, j, k, modelData[i - nxPML_1][j - nyPML_1][k - nzPML_1]);
 				}
 			}
 		}
@@ -790,12 +837,9 @@ void loadModelOneCPU()
 
 			for(k = nzPML_1; k < Kmax - nzPML_2; k++)
 			{
-				if (fabs(epsilon[i - nxPML_1][j - nyPML_1][k - nzPML_1] - 1) < 1e-6 && 
-					fabs(sigma[i - nxPML_1][j - nyPML_1][k - nzPML_1]) < 1e-6)
+				if (modelData[i - nxPML_1][j - nyPML_1][k - nzPML_1] == 0)
 					continue;
-				yeeCube(i, j, k, epsilon[i - nxPML_1][j - nyPML_1][k - nzPML_1], 
-								 sigma[i - nxPML_1][j - nyPML_1][k - nzPML_1],
-								 rho[i - nxPML_1][j - nyPML_1][k - nzPML_1]);
+				yeeCube(i, j, k, modelData[i - nxPML_1][j - nyPML_1][k - nzPML_1]); 
 			}
 		}
 	}

@@ -1,5 +1,11 @@
-update 20110920: 
-1. Add makefile.
-2. Add a function "buildPlane", user can create a 2D plane by this function;
-3. Fix bug in function "buildWire". This bug cause the antenna will not be created when antenna direction equal to 1 or 2 (means 'x' or 'y').
-4. Now we have a more detailed user's guide.
+Update 2013.9.8 v1.21
+Fixes:
+1. The calculation of the input power of plane wave was corrected.
+
+Update 2013.8.7 v1.2
+New feature: 
+1. Could compute "Whole body SAR".
+2. Temperature rise calculation was available.
+Fixes:
+1. Local SAR calculation was more accurate.
+2. PEC absorbing boundary will numerically stable in the long time simulation.

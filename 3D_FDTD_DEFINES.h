@@ -1,36 +1,38 @@
-//Specify Number of Time Steps and Grid Size Parameters
-int isNewProj = 1;
-
+#define _SAR
+//#define _POYNTING
 //Project path
+#ifndef MAX_SIZE_OF_PATH
 #define MAX_SIZE_OF_PATH 256
-char path_proj[MAX_SIZE_OF_PATH] = "F:\\wangmeng\\data\\c\\test\\";
-char proj_name[MAX_SIZE_OF_PATH] = "MedFDTD_Proj";
-char path_log[MAX_SIZE_OF_PATH] = "F:\\wangmeng\\data\\c\\test\\";
+#endif
+#define MAX_NUM_OF_MEDIA 1000
+char proj_name[MAX_SIZE_OF_PATH];
+char path_log[MAX_SIZE_OF_PATH];
 
 //Load power source path(if the waveForm = -1)
-char pathSRC[MAX_SIZE_OF_PATH] = "C:\\source.txt";/* User define source */
+char pathSRC[MAX_SIZE_OF_PATH];/* User define source */
 
 //Save data path
-char path_save[MAX_SIZE_OF_PATH] = "F:\\wangmeng\\data\\c\\test\\";
+char path_save[MAX_SIZE_OF_PATH];
 
 //Load model path, MKS units
-char path_data[MAX_SIZE_OF_PATH] = "F:\\wangmeng\\data\\";
-char data_name_eps[MAX_SIZE_OF_PATH] = {' '};//"epsilon.txt";//
-char data_name_sigma[MAX_SIZE_OF_PATH] = {' '};//"sigma.txt";//
-char data_name_rho[MAX_SIZE_OF_PATH] = {' '};//"rho.txt";//
+char path_data[MAX_SIZE_OF_PATH];
+char model_name[MAX_SIZE_OF_PATH];
+char media_name[MAX_SIZE_OF_PATH];
 
-#define LENGTH_OF_CELL 0.001 /* meter */
-double dx = LENGTH_OF_CELL;
-double dy = LENGTH_OF_CELL;
-double dz = LENGTH_OF_CELL;// cell size in each direction
-
-#define _POYNTING
-#define _SAR
+double dx;
+double dy;
+double dz;
 
 /* 
  * Project Data
  */
-int nMax;//Total number of time steps
+int nMax;/* Total number of time steps */
+int flag = 0;/* Record the current state */
+
+int need_compute_temperature_rise;
+char path_sar[MAX_SIZE_OF_PATH];
+double ds, dt_T;
+int nMaxT;
 
 //Size of Yee Grids¡¢Thickness of PML¡¢Thickness of padding
 int _spaceX;
@@ -53,9 +55,10 @@ void fixLinkBC_H();
 #endif
 
 //Location of feed point£¨1¡ª¡ª_spaceX£©¡¢port£¨x¡¢y¡¢z£©
-int _isource;
-int _jsource;
-int _ksource;
+int _isource[MAX_NUM_OF_MEDIA];
+int _jsource[MAX_NUM_OF_MEDIA];
+int _ksource[MAX_NUM_OF_MEDIA];
+int sourceNum;
 char port;
 
 //Save parameters
@@ -81,33 +84,27 @@ char** save_field_file_name;
 /*
  * SAR files
  */
-#ifdef _SAR
-int XgSAR = 0;
+int whole_body_sar = 0;
+int nXgSAR = 0;
+double* XgSAR;
 int save_localSAR_amount;
 struct localSAR
 {
-	int start;
-	int end;
+	int length;
 	int plane_no;
 	int slice;
-	double** RMS_ex;
-	double** RMS_ey;
-	double** RMS_ez;	
-	double** localSARData;
+	float** RMS_ex;
+	float** RMS_ey;
+	float** RMS_ez;	
+	float** localSARData;
 	FILE* fp;
 };
-struct SAR_10g
-{
-	int start;
-	int end;
-	int plane_no;
-	int slice;
-	double** RMS;
-};
 localSAR* pSAR;
-#endif
-
-
+float*** rho;
+float checkData, checkDataPast;
+float convergence;
+float convergenceCurr, convergenceTarget;
+FILE* fp_check;
 
 //Power source parameters
 int sourceType;//Source type: 0--Point source, 1--Plane source
@@ -117,8 +114,10 @@ int sizeSRC;//Size of user define power source
 double* power;//User define power source
 double amp;//Amplitude
 double freq;//Frequency
+int sourceT;//Period
 int t0;//Start exciation
 int pulse_width;//Exciation length
+int planeWaveIndex;
 
 /*
  * Boundary parameters
@@ -137,9 +136,9 @@ int spaceZ;
 int Imax;//Add on padding and PML
 int Jmax;
 int Kmax;
-int isource;//Add on padding and PML
-int jsource;
-int ksource;
+int isource[MAX_NUM_OF_MEDIA];//Add on padding and PML
+int jsource[MAX_NUM_OF_MEDIA];
+int ksource[MAX_NUM_OF_MEDIA];
 
 /*
  * Select a cube(compute radiation power)
@@ -164,6 +163,8 @@ struct _DIPOLE_ANTENNA
 	int length_high;
 	double impedance;/* Characteristic Impedance */
 };
+int antenna_amount = 0;
+_DIPOLE_ANTENNA* _dipole_antenna;
 
 /*
  * MPI
@@ -177,10 +178,10 @@ int* nx_procs;//compute length on X-axis
  * Physical parameters
  */
 //Fundamental Constants (MKS units)
-double pi = 4 * atan(1.0);
+double pi = 3.14159265;
 double C = 2.99792458E8;
-double muO;
-double epsO;
+double muO = 4.0 * pi * 1.0E-7;
+double epsO = 1.0 / (C * C * muO);
 
 //Specify Material Relative Permittivity and Conductivity
 double epsR = 1.0;//free space
@@ -198,7 +199,7 @@ int nzPML_1, nzPML_2;
 double dt;
 
 //Specify the CPML Order and Other Parameters:
-int m = 4, ma = 1;
+int m = 3, ma = 1;
 
 double sig_x_max;
 double sig_y_max;
@@ -214,12 +215,12 @@ double kappa_z_max;
  * H & E Field components
  */
 
-double *Hx;
-double *Hy;
-double *Hz;
-double *Ex;
-double *Ey;
-double *Ez;
+float *Hx;
+float *Hy;
+float *Hz;
+float *Ex;
+float *Ey;
+float *Ez;
 
 #define Ex(i,j,k) *(Ex + (i)*Jmax*(Kmax-1) + (j)*(Kmax-1) +k)
 #define Ey(i,j,k) *(Ey + (i)*(Jmax-1)*(Kmax-1) + (j)*(Kmax-1) +k)
@@ -228,68 +229,140 @@ double *Ez;
 #define Hy(i,j,k) *(Hy + (i)*Jmax*Kmax + (j)*Kmax +k)
 #define Hz(i,j,k) *(Hz + (i)*(Jmax-1)*(Kmax-1) + (j)*(Kmax-1) +k)
 
+//float *maxE;
+//#define maxE(i,j,k) *(maxE + (i)*Jmax*Kmax + (j)*Kmax +k)
+float *minEz;
+#define minE(i,j,k) *(minE + (i)*Jmax*Kmax + (j)*Kmax +k)
+
+typedef vector<double> vectorD1;
+typedef vector<vectorD1> vectorD2;
+typedef vector<vectorD2> vectorD3;
+
+vectorD3* maxE;
+void writeField(FILE*, vectorD3, vector< int >);
+void setOutputRange();
+void saveMaxE();
+vector< int > outputRangeEx(6, 0);
+vector< int > outputRangeEy(6, 0);
+vector< int > outputRangeEz(6, 0);
+vector< int > outputRangeHx(6, 0);
+vector< int > outputRangeHy(6, 0);
+vector< int > outputRangeHz(6, 0);
+vector< int > outputRangeE(6, 0);
+
+// Dispersion
+int media_dispersion = 0;
+float *Dx;
+float *Dy;
+float *Dz;
+#define Dx(i,j,k) *(Dx + (i)*Jmax*(Kmax-1) + (j)*(Kmax-1) +k)
+#define Dy(i,j,k) *(Dy + (i)*(Jmax-1)*(Kmax-1) + (j)*(Kmax-1) +k)
+#define Dz(i,j,k) *(Dz + (i)*Jmax*Kmax + (j)*Kmax +k)
+float *preDx;
+float *preDy;
+float *preDz;
+#define preDx(i,j,k) *(preDx + (i)*Jmax*(Kmax-1) + (j)*(Kmax-1) +k)
+#define preDy(i,j,k) *(preDy + (i)*(Jmax-1)*(Kmax-1) + (j)*(Kmax-1) +k)
+#define preDz(i,j,k) *(preDz + (i)*Jmax*Kmax + (j)*Kmax +k)
+float *prepreDx;
+float *prepreDy;
+float *prepreDz;
+#define prepreDx(i,j,k) *(prepreDx + (i)*Jmax*(Kmax-1) + (j)*(Kmax-1) +k)
+#define prepreDy(i,j,k) *(prepreDy + (i)*(Jmax-1)*(Kmax-1) + (j)*(Kmax-1) +k)
+#define prepreDz(i,j,k) *(prepreDz + (i)*Jmax*Kmax + (j)*Kmax +k)
+float *preEx;
+float *preEy;
+float *preEz;
+#define preEx(i,j,k) *(preEx + (i)*Jmax*(Kmax-1) + (j)*(Kmax-1) +k)
+#define preEy(i,j,k) *(preEy + (i)*(Jmax-1)*(Kmax-1) + (j)*(Kmax-1) +k)
+#define preEz(i,j,k) *(preEz + (i)*Jmax*Kmax + (j)*Kmax +k)
+float *prepreEx;
+float *prepreEy;
+float *prepreEz;
+#define prepreEx(i,j,k) *(prepreEx + (i)*Jmax*(Kmax-1) + (j)*(Kmax-1) +k)
+#define prepreEy(i,j,k) *(prepreEy + (i)*(Jmax-1)*(Kmax-1) + (j)*(Kmax-1) +k)
+#define prepreEz(i,j,k) *(prepreEz + (i)*Jmax*Kmax + (j)*Kmax +k)
+double CB_PML[MAX_NUM_OF_MEDIA];
+double DisDa[MAX_NUM_OF_MEDIA];
+double DisDb[MAX_NUM_OF_MEDIA];
+double DisDc[MAX_NUM_OF_MEDIA];
+double DisEa[MAX_NUM_OF_MEDIA];
+double DisEb[MAX_NUM_OF_MEDIA];
+double DisEc[MAX_NUM_OF_MEDIA];
+
+void computeDispersion();
+void initializeDispersion();
+int loadMediaData_Dispersion(char*, int);
+void computeFieldH_Dispersion();
+void computeFieldH_0_Dispersion();
+void computeFieldH_nprocsSub1_Dispersion();
+void computePMLH_Dispersion();
+void computePMLH_0_Dispersion();
+void computePMLH_nprocsSub1_Dispersion();
+void computeFieldE_Dispersion();
+void computeFieldE_right_Dispersion();
+void computeFieldE_0_Dispersion();
+void computeFieldE_nprocsSub1_Dispersion();
+void computePMLE_Dispersion();
+void computePMLE_0_Dispersion();
+void computePMLE_nprocsSub1_Dispersion();
+int formulaEx_Dispersion(int, int, int);
+int formulaEy_Dispersion(int, int, int);
+int formulaEz_Dispersion(int, int, int);
+
 /*
  * Model
  */
-//medium definition array for Ex
-double ***ID1_EpsR;
-double ***ID1_SigR;
-//medium definition array for Ey
-double ***ID2_EpsR;
-double ***ID2_SigR;
-//medium definition array for Ez
-double ***ID3_EpsR;
-double ***ID3_SigR;
-#ifdef _SAR
-double ***ID1_RhoR;
-double ***ID2_RhoR;
-double ***ID3_RhoR;
-#endif
-
-#define _NEWMODEL
-#ifdef  _NEWMODEL
-char*** modelData;
-char*** modelDataX;
-char*** modelDataY;
-char*** modelDataZ;
+unsigned char*** modelData;
+unsigned char*** modelDataX;
+unsigned char*** modelDataY;
+unsigned char*** modelDataZ;
+int object_num = 0;
+int **object_creat;
 struct media_data
 {
-	double epsilon;
 	double sigma;
+	double epsilon;
+    double epsilon_inf;
+    double delay;
 	double rho;
+	double spec_heat;
+    double K;
+    double B;
 };
-media_data* media;
-double* CA;
-double* CB;
-#endif
+media_data media[MAX_NUM_OF_MEDIA];
+int mediaNum;
+int maxMedia = 2; /* 0---vaccum, 1---PEC */
+double CA[MAX_NUM_OF_MEDIA];
+double CB[MAX_NUM_OF_MEDIA];
 
 /*
  * CPML components (Taflove 3rd Edition, Chapter 7)
  */
-double ***psi_Ezx_1;
-double ***psi_Ezx_2;
-double ***psi_Hyx_1;
-double ***psi_Hyx_2;
-double ***psi_Ezy_1;
-double ***psi_Ezy_2;
-double ***psi_Hxy_1;
-double ***psi_Hxy_2;
-double ***psi_Hxz_1;
-double ***psi_Hxz_2;
-double ***psi_Hyz_1;
-double ***psi_Hyz_2;
-double ***psi_Exz_1;
-double ***psi_Exz_2;
-double ***psi_Eyz_1;
-double ***psi_Eyz_2;
-double ***psi_Hzx_1;
-double ***psi_Eyx_1;
-double ***psi_Hzx_2;
-double ***psi_Eyx_2;
-double ***psi_Hzy_1;
-double ***psi_Exy_1;
-double ***psi_Hzy_2;
-double ***psi_Exy_2;
+float ***psi_Ezx_1;
+float ***psi_Ezx_2;
+float ***psi_Hyx_1;
+float ***psi_Hyx_2;
+float ***psi_Ezy_1;
+float ***psi_Ezy_2;
+float ***psi_Hxy_1;
+float ***psi_Hxy_2;
+float ***psi_Hxz_1;
+float ***psi_Hxz_2;
+float ***psi_Hyz_1;
+float ***psi_Hyz_2;
+float ***psi_Exz_1;
+float ***psi_Exz_2;
+float ***psi_Eyz_1;
+float ***psi_Eyz_2;
+float ***psi_Hzx_1;
+float ***psi_Eyx_1;
+float ***psi_Hzx_2;
+float ***psi_Eyx_2;
+float ***psi_Hzy_1;
+float ***psi_Exy_1;
+float ***psi_Hzy_2;
+float ***psi_Exy_2;
 
 double *be_x_1, *ce_x_1, *alphae_x_PML_1, *sige_x_PML_1, *kappae_x_PML_1;
 double *bh_x_1, *ch_x_1, *alphah_x_PML_1, *sigh_x_PML_1, *kappah_x_PML_1;
@@ -312,30 +385,23 @@ double *den_hy;
 double *den_ez;
 double *den_hz;
 
-//permittivity, permeability and conductivity of diffrent materials
-double ***epsilon;
-double ***sigma;
-double ***rho;
-
 //E&H field update coefficients
 double DA;
 double DB;
-double ***CAx, ***CBx;
-double ***CAy, ***CBy;
-double ***CAz, ***CBz;
 
 /*
  * Load data parameters
  */
 int size[3];
-char path_eps[MAX_SIZE_OF_PATH], path_sigma[MAX_SIZE_OF_PATH], path_rho[MAX_SIZE_OF_PATH];
+char path_model[MAX_SIZE_OF_PATH];
+char path_media[MAX_SIZE_OF_PATH];
 long mem_count = 0;
 
 /*
  * Functions about Project
  */
-int openProject(char*);
-int newProject(char*);
+int openProject(FILE*);
+int newProject();
 /*
  * Functions about initialize
  */
@@ -343,12 +409,18 @@ int newProject(char*);
 void initializeFile();//Disk files initialization
 void initializePart1();//Memeory initialization
 void initializePart2();//Memeory initialization
-void setUp();//Coefficients, parameters etc will get computed
+int setUp();//Coefficients, parameters etc will get computed
 void setUpCPML();//CPML coefficient computation
 //Arrays
+float* initArrayFloat(int);
 double* initArray(int);
 double*** initArray3(int, int, int ,double);
+float*** initArray3Float(int, int, int ,float);
+unsigned char*** initArray3Char(int, int, int);
 void freeArray3(double***, int, int, int);
+void freeArray3Float(float***, int, int, int);
+void freeArray3Char(unsigned char***, int, int, int);
+void freeFDTDData(void);
 
 /*
  * Functions about compute
@@ -375,19 +447,24 @@ void computePlane();//E & H Field update equation
  * Functions about model
  */
 void buildObject();//Creates the object geometry
-void yeeCube (int, int, int, double, double, double);//Sets material properties to a cell
-void buildCuboid(int, int, int, int, int, int, double, double, double);
-void buildPlane(int, int, int, int, int, int, double, double, double);
-void buildWire(int, int, int, int, int, int);
+void yeeCube (int, int, int, unsigned char);//Sets material properties to a cell
+void yeeCubeCap (int, int, int, unsigned char);//Sets material properties to a cellµçÈÝÆ÷
+void buildCuboid(int, int, int, int, int, int, unsigned char);
+void buildPlane(int, int, int, int, int, int, unsigned char);
+void buildLine(int, int, int, int, int, int, unsigned char);
 void creatDipoleAntenna(_DIPOLE_ANTENNA);
-double*** loadData3(char*, int*, double);//Load model data
+unsigned char createNewMedia(int, double, double, double, double spec_heat = 0);
+unsigned char*** loadData3(char*, int*);//Load model data
+int loadMediaData(char*, int);
 void loadModel();//Creat model
 void loadModelOneCPU();
-void loadCACB();//compute coefficients
 /*
  * Functions about power source
  */
 void powerSource(int);//Generate source
+void powerSourcePlaneWaveH(int);//Generate source
+double getSource(int, double, double);
+double genSource(int);
 double* loadSRC(char*);//Load user define power source
 /*
  * Functions about save data
@@ -408,13 +485,13 @@ void int2str(int, char*);
  * Poynting vector
  */
 #ifdef _POYNTING
-	double radiationPower(radiation_region);
-	double* preEx;
-	double* preEy;
-	double* preEz;
-	#define preEx(i,j,k) *(preEx + (i)*Jmax*(Kmax-1) + (j)*(Kmax-1) +k)
-	#define preEy(i,j,k) *(preEy + (i)*(Jmax-1)*(Kmax-1) + (j)*(Kmax-1) +k)
-	#define preEz(i,j,k) *(preEz + (i)*Jmax*Kmax + (j)*Kmax +k)
+double radiationPower(radiation_region);
+double* preEx;
+double* preEy;
+double* preEz;
+#define preEx(i,j,k) *(preEx + (i)*Jmax*(Kmax-1) + (j)*(Kmax-1) +k)
+#define preEy(i,j,k) *(preEy + (i)*(Jmax-1)*(Kmax-1) + (j)*(Kmax-1) +k)
+#define preEz(i,j,k) *(preEz + (i)*Jmax*Kmax + (j)*Kmax +k)
 #endif
 
 /*
@@ -438,18 +515,35 @@ double* Ez_n;
  */
 void addFunctions();
 
-#ifdef _SAR
 localSAR* initializeLocalSAR(localSAR*, int);
+int freeLocalSARRMS(localSAR*, int);
+int freeLocalSARData(localSAR*, int);
 void computeRMS(localSAR*, int);
-void computeLocalSAR(localSAR, localSAR, double***);
-void writeLocalSAR(FILE* , double**);
+float checkRMS();
+void resetRMS();
+void computeLocalSAR(localSAR, localSAR, float***);
+void writeLocalSAR(FILE* , float**);
 
-int computeXgSAR(double);
-double*** loadLocalSAR(int*);
-double* trans3DTo1D(double***, int*);
-double*** trans1DTo3D(double*, int*);
-#endif
+int computeXgSAR(int);
+float*** loadLocalSAR(int*);
+float* trans3DTo1D(float***, int*);
+float*** trans1DTo3D(float*, int*);
 
-//ERROE Codes
+int computeTemperatureRise(char*);
+int temperatureRise(char*, double***, unsigned char***, int*);
+int loadBackUp(float*, int*, int);
+unsigned char*** loadData3T(char*, int*);
+double*** loadSar(char*, int*);
+
+/* ERROE Codes */
+#define SUCCESS 0
 #define MEM_ERROR 1
+#define FILE_ERROR 2
+#define SETTING_ERROR 3
 
+FILE* fp_mem;
+
+//#define _DEBUG
+//#define _DEBUG_L2
+//#define _DEBUG_L3
+//#define _DEBUG_L4
